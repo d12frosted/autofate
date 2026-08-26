@@ -371,12 +371,28 @@ public sealed unsafe class FarmingController
         // Stray-aggro guard: if we're between fates (selecting/traveling) and something hostile is
         // beating on us or our chocobo, drop into ClearingAggro to deal with it first. Checked
         // continuously (not just at fate-end) since aggro can land at any time.
+        //
+        // NEVER while airborne. Nothing on the ground can reach us up there and the mob that tagged
+        // us leashes on its own, so breaking off only means landing somewhere random and throwing
+        // the whole flight away — which is exactly the "flying to a fate, got aggroed, stopped and
+        // unmounted" case. We keep flying and let it fall off.
+        //
+        // The trigger is a REAL attacker, not the in-combat flag. The flag lingers after a mob has
+        // given up, so on the tick we touch down at the fate it used to drag us straight back out
+        // of the fate we had just arrived at. This also matches what TickClearingAggro actually
+        // does — it only ever fights things that target us or our chocobo.
         if ((State == FarmState.SelectingFate || State == FarmState.TravelingToFate
              || State == FarmState.SelectingZone || State == FarmState.TravelingToZone)
-            && (InCombat() || FateTargeting.GetEnemiesAttackingMe().Count > 0))
+            && !MountManager.IsFlying
+            && FateTargeting.GetEnemiesAttackingMe().Count > 0)
         {
             Navigator.Stop();
             State = FarmState.ClearingAggro;
+        }
+        else if (MountManager.IsFlying && InCombat()
+                 && (State == FarmState.TravelingToFate || State == FarmState.TravelingToZone))
+        {
+            Diag("Combat", "flyaggro", "aggroed mid-flight -> ignoring it and staying on the mount");
         }
 
         // Grounded-stuck escape (back out + regenerate) — consumes the tick if active.
@@ -2160,28 +2176,32 @@ public sealed unsafe class FarmingController
 
     private void TickClearingAggro()
     {
-        // GROUNDED GUARD: land + dismount before targeting/engaging stray aggro.
-        if (Features.MountManager.IsMounted || Features.MountManager.IsFlying)
-        {
-            Navigator.Stop();
-            Features.MountManager.Dismount();
-            StatusText = "Landing/dismounting before clearing aggro";
-            return;
-        }
-
         // ONLY fight enemies ACTUALLY attacking us (or our chocobo). Never target a non-fate enemy
         // that isn't aggro'd on us - no GetNearestHostile fallback. If nothing is on us, we're done,
         // even if the in-combat flag is still lingering.
+        //
+        // Checked BEFORE we touch the mount. The mount is what gets us to the next fate, so we only
+        // give it up once we know there is something here to fight: dismounting first meant a mob
+        // that tagged us in passing and then leashed still cost us the mount and the trip.
         var attackers = FateTargeting.GetEnemiesAttackingMe();
         var hostile = attackers.Count > 0 ? attackers[0] : null;
 
-        Diag("Combat", "clearaggro", $"attackers={attackers.Count} hostile={(hostile?.Name.ToString() ?? "<null>")} inCombat={InCombat()}");
+        Diag("Combat", "clearaggro", $"attackers={attackers.Count} hostile={(hostile?.Name.ToString() ?? "<null>")} inCombat={InCombat()} mounted={Features.MountManager.IsMounted} flying={Features.MountManager.IsFlying}");
 
         if (hostile == null)
         {
             Navigator.Stop();
             SetCombatBackend(false);
             State = FarmState.SelectingFate;
+            return;
+        }
+
+        // GROUNDED GUARD: land + dismount before targeting/engaging stray aggro.
+        if (Features.MountManager.IsMounted || Features.MountManager.IsFlying)
+        {
+            Navigator.Stop();
+            Features.MountManager.Dismount();
+            StatusText = "Landing/dismounting before clearing aggro";
             return;
         }
 
