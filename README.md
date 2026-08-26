@@ -44,6 +44,7 @@ Collection modes (Atma/Demiatma/Luminous/Memories) track the required items in y
 ### Travel
 - vnavmesh navigation with automatic mounting / flight (pick your mount).
 - Lifestream for between-zone teleporting and an optional end-of-run command + chocobo leveling (see below)
+- Optional **teleport to the nearest aetheryte**: when the picked fate is far away, hop to the attuned aetheryte closest to it instead of flying the whole zone (off by default, costs gil, with distance and minimum-saving thresholds).
 
 ### Chocobo
 - Companion stance (Defender/Attacker/Healer) with **auto-Healer when your or the chocobo's HP drops** below a user-defined threshold.

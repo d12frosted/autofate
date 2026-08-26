@@ -37,6 +37,30 @@ public sealed partial class MainWindow
         var useLs = C.UseLifestream;
         if (ImGui.Checkbox("Use Lifestream for teleporting between zones", ref useLs)) { C.UseLifestream = useLs; Save(); }
 
+        var autoTp = C.AutoTeleportNearestAetheryte;
+        if (ImGui.Checkbox("Teleport to the nearest aetheryte when a fate is far away", ref autoTp))
+        {
+            C.AutoTeleportNearestAetheryte = autoTp; Save();
+        }
+        ImGui.SameLine(); Help("Instead of flying across the whole zone, teleport to the attuned aetheryte "
+            + "closest to the fate and fly the rest. Costs gil, so it only fires when it saves a long trip. "
+            + "Mostly useful in Heavensward-and-later zones, which have several aetherytes.");
+        if (C.AutoTeleportNearestAetheryte)
+        {
+            ImGui.Indent();
+            var hopMin = C.AetheryteHopMinDistance;
+            if (ImGui.SliderFloat("Only if the fate is farther than (yalms)", ref hopMin, 100f, 1500f, "%.0f"))
+            {
+                C.AetheryteHopMinDistance = hopMin; Save();
+            }
+            var hopSave = C.AetheryteHopMinSaving;
+            if (ImGui.SliderFloat("Only if it saves at least (yalms)", ref hopSave, 50f, 1000f, "%.0f"))
+            {
+                C.AetheryteHopMinSaving = hopSave; Save();
+            }
+            ImGui.Unindent();
+        }
+
 
         ImGui.Spacing();
         var onFinish = C.LifestreamOnFinish;
