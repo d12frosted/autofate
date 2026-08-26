@@ -332,6 +332,12 @@ public sealed unsafe class FarmingController
         // Hard stop triggers (checked every tick).
         if (CheckStopTriggers()) return;
 
+        // Keep BMR's AutoTarget fate scoping alive. These are TRANSIENT strategies, so BMR drops
+        // them on its own (zone change, preset re-activation) — pushing them only when the rotation
+        // is switched on meant the scoping could lapse for the rest of the run without a trace.
+        // Self-throttled to one push every 2s.
+        if (_rotationActive) IPCManager.ApplyBmrFateTargeting(C);
+
         // Always-on maintenance that can run in parallel with farming.
         ConsumableManager.Tick(C);
         // Skip companion maintenance while stabling: the stable routine WITHDRAWS the chocobo, and
