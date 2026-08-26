@@ -332,6 +332,11 @@ public sealed unsafe class FarmingController
         // Hard stop triggers (checked every tick).
         if (CheckStopTriggers()) return;
 
+        // DEAD: park everything until we're back up. Nothing below this line makes sense on a
+        // corpse — it used to keep targeting mobs, then "walk" to the next fate (0y moved, jump,
+        // back out, repeat) until someone noticed.
+        if (TickDead()) return;
+
         // Keep BMR's AutoTarget fate scoping alive. These are TRANSIENT strategies, so BMR drops
         // them on its own (zone change, preset re-activation) — pushing them only when the rotation
         // is switched on meant the scoping could lapse for the rest of the run without a trace.
@@ -415,6 +420,89 @@ public sealed unsafe class FarmingController
     }
 
     // ---------------------------------------------------------------- stop triggers
+    // Death handling: when we started being dead (0 = alive) and when we last tried Return.
+    private long _deadSinceMs;
+    private long _returnLastTryMs;
+    private const uint ReturnGeneralAction = 8; // "Return" — revive at the nearest aetheryte
+
+    /// <summary>
+    /// Returns true while we're dead, which parks the whole tick. Stops navigation and combat on
+    /// the way down, optionally uses Return to get us back up, and resumes farming once we're alive.
+    /// </summary>
+    private bool TickDead()
+    {
+        var me = Player.Object;
+        var dead = me != null && me.IsDead;
+
+        if (!dead)
+        {
+            if (_deadSinceMs != 0)
+            {
+                Svc.Log.Information($"[Autofate] Alive again after {(Environment.TickCount64 - _deadSinceMs) / 1000}s — resuming.");
+                _deadSinceMs = 0;
+                _returnLastTryMs = 0;
+                // We may be anywhere now (raised on the spot, or returned to an aetheryte), so
+                // re-pick from the top rather than resuming a fate we're no longer near.
+                _targetFateId = 0;
+                ResetPerFateState();
+                SetAiActive(true);   // hand AOE dodging back; the rotation comes back at the fate
+                State = FarmState.SelectingZone;
+            }
+            return false;
+        }
+
+        if (_deadSinceMs == 0)
+        {
+            _deadSinceMs = Environment.TickCount64;
+            Navigator.Stop();
+            SetCombatBackend(false);
+            State = FarmState.Dead;
+            Svc.Log.Warning($"[Autofate] Died (death {Stats.Deaths} this session) — everything parked until we're back up.");
+            Svc.Chat.PrintError("[Autofate] You died — paused until you're up again.");
+        }
+
+        var downMs = Environment.TickCount64 - _deadSinceMs;
+        StatusText = $"Dead — waiting ({downMs / 1000}s)";
+
+        // A raise from another player pops a Yes/No ("accept the offer of resurrection?"), and so
+        // does Return's own confirmation — the only two dialogs we can see while down, so one Yes
+        // handles both. With raise-accept off we still confirm briefly after firing Return, or the
+        // prompt would sit there unanswered.
+        var confirmDialog = C.AcceptRaiseAutomatically
+            || (_returnLastTryMs != 0 && Environment.TickCount64 - _returnLastTryMs < 10000);
+        if (confirmDialog
+            && ECommons.GenericHelpers.TryGetAddonByName<FFXIVClientStructs.FFXIV.Component.GUI.AtkUnitBase>("SelectYesno", out var raiseYn)
+            && ECommons.GenericHelpers.IsAddonReady(raiseYn))
+        {
+            if (EzThrottler.Throttle("AF_DeathConfirm", 500))
+            {
+                try { new ECommons.UIHelpers.AddonMasterImplementations.AddonMaster.SelectYesno((nint)raiseYn).Yes(); }
+                catch (Exception e) { Svc.Log.Verbose($"[Autofate] Death dialog Yes failed (mid-transition): {e.Message}"); }
+            }
+            StatusText = "Dead — accepting revival";
+            return true;
+        }
+
+        // Return revives us at the nearest aetheryte. Delayed so a passing player still has a
+        // window to raise us, and retried because it's refused while a raise is pending.
+        if (C.AutoReturnOnDeath
+            && downMs >= C.DeathReturnDelaySeconds * 1000L
+            && Environment.TickCount64 - _returnLastTryMs >= 10000)
+        {
+            _returnLastTryMs = Environment.TickCount64;
+            StatusText = "Dead — returning to the aetheryte";
+            try
+            {
+                FFXIVClientStructs.FFXIV.Client.Game.ActionManager.Instance()
+                    ->UseAction(FFXIVClientStructs.FFXIV.Client.Game.ActionType.GeneralAction, ReturnGeneralAction);
+                Svc.Log.Information("[Autofate] Using Return to revive at the nearest aetheryte.");
+            }
+            catch (Exception e) { Svc.Log.Warning($"[Autofate] Return failed: {e.Message}"); }
+        }
+
+        return true;
+    }
+
     private bool CheckStopTriggers()
     {
         if (C.StopAtLevel && Player.Level >= C.DesiredLevel)

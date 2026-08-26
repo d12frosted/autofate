@@ -56,6 +56,7 @@ public enum FarmState
     TravelingToFate,
     InFate,
     ClearingAggro,     // kill stray non-fate enemies attacking us before moving on
+    Dead,              // player is dead: everything is parked until we're back up
     CollectTurnIn,
     Maintenance,       // repair / consumables / retainer
     ChocoboLeveling,
