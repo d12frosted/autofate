@@ -100,6 +100,14 @@ public sealed class Configuration
     /// <summary>Stop farming entirely once every shared-fate zone is maxed.</summary>
     public bool StopWhenAllSharedFatesMaxed = true;
 
+    // ------------------------------------------------------------------ Death
+    /// <summary>Accept a resurrection when another player raises us (the Yes/No prompt).</summary>
+    public bool AcceptRaiseAutomatically = true;
+    /// <summary>Use Return to revive at the nearest aetheryte instead of lying there waiting for a raise.</summary>
+    public bool AutoReturnOnDeath = true;
+    /// <summary>How long to stay down before using Return (gives a passing player time to raise us).</summary>
+    public int DeathReturnDelaySeconds = 20;
+
     // ------------------------------------------------------------------ Combat backends
     // Movement is ALWAYS our hybrid setup (vnavmesh handles travel + approach, BMR handles in-combat
     // repositioning + AOE dodge). There is no movement-backend option — it's fixed. Only the damage
