@@ -53,6 +53,9 @@ public sealed partial class MainWindow
         DrawDetect("TextAdvance", IPC.TextAdvanceIPC.IsInstalled);
 
         ImGui.Separator();
+        DrawOverlaySettings();
+
+        ImGui.Separator();
         var verbose = C.VerboseLogging;
         if (ImGui.Checkbox("Verbose logging", ref verbose)) { C.VerboseLogging = verbose; Save(); }
         ImGuiEx.HelpMarker("Logs detailed diagnostics to the Dalamud log (/xllog): fate selection, plus [Diag/...] lines for NPC interaction, combat targeting/movement, collect, and escort. Use when reporting a stuck/loop bug.");
@@ -73,6 +76,36 @@ public sealed partial class MainWindow
             ImGui.TextDisabled("(hold Ctrl)");
         }
         ImGui.TextDisabled("Resets everything, including mount, food/potion, gemstone vendor, and stable setup.");
+    }
+
+    /// <summary>Settings for the small runtime overlay shown while farming.</summary>
+    private void DrawOverlaySettings()
+    {
+        ImGui.TextUnformatted("Runtime overlay");
+
+        var useOverlay = C.UseRuntimeOverlay;
+        if (ImGui.Checkbox("Show the overlay while farming", ref useOverlay)) { C.UseRuntimeOverlay = useOverlay; Save(); }
+        ImGuiEx.HelpMarker("A small window with what the bot is doing, session stats, and pause / stop / settings buttons. Drag it anywhere.");
+
+        using var disabled = ImRaii.Disabled(!useOverlay);
+
+        var hide = C.OverlayHidesMainWindow;
+        if (ImGui.Checkbox("Hide this window while farming", ref hide)) { C.OverlayHidesMainWindow = hide; Save(); }
+        ImGuiEx.HelpMarker("The overlay's cog button brings it back without stopping the run.");
+
+        var compact = C.OverlayCompact;
+        if (ImGui.Checkbox("Compact overlay", ref compact)) { C.OverlayCompact = compact; Save(); }
+        ImGuiEx.HelpMarker("One line: status text and the buttons, no stats.");
+
+        var locked = C.OverlayLocked;
+        if (ImGui.Checkbox("Lock overlay position", ref locked)) { C.OverlayLocked = locked; Save(); }
+
+        var alpha = C.OverlayAlpha;
+        ImGui.SetNextItemWidth(160);
+        if (ImGui.SliderFloat("Overlay opacity", ref alpha, 0.2f, 1f, "%.2f")) C.OverlayAlpha = alpha;
+        if (ImGui.IsItemDeactivatedAfterEdit()) Save();
+
+        if (ImGui.Button("Reset overlay position")) Plugin.Instance!.ResetOverlayPosition();
     }
 
     private static void DrawDetect(string name, bool installed)

@@ -60,6 +60,12 @@ Collection modes (Atma/Demiatma/Luminous/Memories) track the required items in y
 - Auto-travel to your captured vendor, buy, and return to farming.
 - Tracks **gross gemstones gained** across the session.
 
+### Runtime overlay
+- While farming, the main window steps aside for a small always-on overlay: what the bot is doing right now, session stats (FATEs, gemstones held vs the cap, level, deaths), and a progress bar for whatever the run is working towards (shared FATE rank, collectables, target level, gemstone target).
+- Pause / resume, stop, and a cog that reopens the settings window without stopping the run. Clicking the status line jumps straight to the Status tab.
+- **Pause** stops navigation and shuts the combat backends down while keeping the session, its counters and its current state. It cannot unwind dialogue or a cutscene that is already in flight, and with the AI backend off nothing is dodging for you, so pausing mid-pull will get you killed. A FATE held over a long pause has usually expired, so resuming picks a new one.
+- Compact one-line mode, opacity, lock position, or turn the overlay off entirely in the Status tab.
+
 ### Stop triggers
 - Stop at desired level, gemstone count, chocobo max level, vendor targets met, or (in leveling mode) after dying twice. <- this is to prevent infinitely running overnight and dying over and over like an idiot if you reach a level you do not have gear for.
 
@@ -88,6 +94,7 @@ from **Plugin Installer → Dev Tools**.
 ### Commands
 - `/autofates`, `/autofate`, `/af`: open the window.
 - `/af start`, `/af stop`, `/af toggle`: control farming.
+- `/af pause`: pause or resume a running session.
 
 ## Required companion plugins
 - **vnavmesh**: required for navigation.
@@ -111,6 +118,20 @@ dotnet build Autofate/Autofate.csproj -c Release
 Output: `Autofate/bin/x64/Release/Autofate.dll`. The build references your local Dalamud dev
 libraries at `~/.xlcore/dalamud/Hooks/dev/` (override with `-p:DalamudLibPath=...`). Targets
 `net10.0-windows`, Dalamud API level 15.
+
+### Installing a local build (XIV on Mac)
+
+`scripts/install.sh` builds the plugin and registers the output as a dalamud dev plugin in a
+XIV on Mac setup, using the dalamud libraries the game already ships with. It also knows about
+`--release`, `--no-build`, `--dry-run`, `--status` and `--uninstall`.
+
+```bash
+./scripts/install.sh
+```
+
+Once registered, running it again works with the game open: dalamud reloads the plugin itself.
+Changing the registration does not, since dalamud rewrites its config when the game exits, so
+the script refuses to do that while FFXIV is running.
 ## Updating the published plugin (maintainer)
 
 ```bash

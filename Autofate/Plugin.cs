@@ -14,6 +14,12 @@ public sealed class Plugin : IDalamudPlugin
 
     public Core.FarmingController Controller { get; }
     private readonly UI.MainWindow _window;
+    private readonly UI.OverlayWindow _overlay;
+
+    // Main-window visibility is handed over to the overlay while a run is going: we remember
+    // whether it was open so Stop can put it back the way the user had it.
+    private bool _wasRunning;
+    private bool _mainWasOpen;
 
     public Plugin(IDalamudPluginInterface pi)
     {
@@ -28,11 +34,14 @@ public sealed class Plugin : IDalamudPlugin
         _window = new UI.MainWindow();
         // Register our window directly with the EzConfig window system (handles UiBuilder wiring).
         EzConfigGui.Init(_window);
+        // The runtime overlay rides along on the same window system.
+        _overlay = new UI.OverlayWindow();
+        EzConfigGui.WindowSystem.AddWindow(_overlay);
         // Also expose the window as the plugin's main UI entrypoint (the title-screen/installer
         // "open" button), satisfying Dalamud's OpenMainUi convention.
         Svc.PluginInterface.UiBuilder.OpenMainUi += OpenMainUi;
 
-        EzCmd.Add("/autofates", OnCommand, "Open Autofate. Use '/autofates start|stop|toggle' to control farming.");
+        EzCmd.Add("/autofates", OnCommand, "Open Autofate. Use '/autofates start|stop|pause|toggle' to control farming.");
         EzCmd.Add("/autofate", OnCommand, "Alias for /autofates.");
         EzCmd.Add("/af", OnCommand, "Alias for /autofates.");
 
@@ -47,7 +56,45 @@ public sealed class Plugin : IDalamudPlugin
         {
             Svc.Log.Error($"[Autofate] Tick error: {e}");
         }
+
+        try { SyncWindows(); }
+        catch (Exception e)
+        {
+            Svc.Log.Error($"[Autofate] Window sync error: {e}");
+        }
     }
+
+    /// <summary>
+    /// The overlay is up exactly while a run is. On the transitions we also hide the main window
+    /// (it's the settings window, and you're not configuring while farming) and restore it after.
+    /// </summary>
+    private void SyncWindows()
+    {
+        var running = Controller.Running;
+        _overlay.IsOpen = running && C.UseRuntimeOverlay;
+
+        if (running == _wasRunning) return;
+        _wasRunning = running;
+
+        if (!C.UseRuntimeOverlay || !C.OverlayHidesMainWindow) return;
+
+        if (running)
+        {
+            _mainWasOpen = _window.IsOpen;
+            _window.IsOpen = false;
+        }
+        else if (_mainWasOpen)
+        {
+            _mainWasOpen = false;
+            _window.IsOpen = true;
+        }
+    }
+
+    /// <summary>Open the settings window (the overlay's cog). Does not touch the run.</summary>
+    public void ShowMainWindow() => _window.IsOpen = true;
+
+    /// <summary>Put the overlay back at a known position (Status tab button).</summary>
+    public void ResetOverlayPosition() => _overlay.ResetPosition();
 
     /// <summary>Reset ALL config back to defaults (including user-specific setup).</summary>
     public static void ResetToDefaults()
@@ -84,7 +131,7 @@ public sealed class Plugin : IDalamudPlugin
         catch (Exception e) { Svc.Log.Warning($"[Autofate] Config migration skipped: {e.Message}"); }
     }
 
-    private void OpenMainUi() => _window.IsOpen = true;
+    private void OpenMainUi() => ShowMainWindow();
 
     private void OnCommand(string command, string args)
     {
@@ -92,6 +139,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             case "start": Controller.Start(); break;
             case "stop": Controller.Stop(); break;
+            case "pause": Controller.TogglePause(); break;
             case "toggle": Controller.Toggle(); break;
             case "":
             default:

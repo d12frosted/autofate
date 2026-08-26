@@ -62,6 +62,17 @@ public sealed partial class MainWindow : Window
             if (ImGui.Button(running ? "STOP" : "START", new Vector2(120, 32)))
                 Controller.Toggle();
         }
+        if (running)
+        {
+            ImGui.SameLine();
+            var paused = Controller.Paused;
+            using (ImRaii.PushColor(ImGuiCol.Button, new Vector4(0.55f, 0.42f, 0.15f, 1f)))
+            {
+                if (ImGui.Button(paused ? "RESUME" : "PAUSE", new Vector2(90, 32)))
+                    Controller.TogglePause();
+            }
+        }
+
         ImGui.SameLine();
         ImGui.BeginGroup();
         ImGui.TextUnformatted($"State: {Controller.State}");

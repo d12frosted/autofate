@@ -10,6 +10,9 @@ public static class GameItems
 
     public const uint BicolorGemstone = 26807;    // currency item id for bicolor gemstones
 
+    /// <summary>Inventory cap on bicolor gemstones. Bump this if SE raises it.</summary>
+    public const int BicolorGemstoneCap = 1500;
+
     // Dark matter grades for self-repair (Grade 1..8); Grade 8 is the usual cap.
     public static readonly uint[] DarkMatter =
     {
