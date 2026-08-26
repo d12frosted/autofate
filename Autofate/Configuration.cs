@@ -188,6 +188,20 @@ public sealed class Configuration
     public bool VerboseLogging = true;
     public bool OpenOnLogin = false;
 
+    // ------------------------------------------------------------------ Runtime overlay
+    /// <summary>Show the compact runtime overlay (status + pause/stop/settings) while farming.</summary>
+    public bool UseRuntimeOverlay = true;
+    /// <summary>Hide the main window while farming. The overlay cog button brings it back.</summary>
+    public bool OverlayHidesMainWindow = true;
+    /// <summary>One-line overlay: status text + controls only, no stats.</summary>
+    public bool OverlayCompact = false;
+    /// <summary>Pin the overlay so it can't be dragged around.</summary>
+    public bool OverlayLocked = false;
+    /// <summary>Overlay background opacity (0.2 - 1.0).</summary>
+    public float OverlayAlpha = 0.85f;
+    /// <summary>Last overlay screen position. Zero = unset, let ImGui place it.</summary>
+    public System.Numerics.Vector2 OverlayPosition = System.Numerics.Vector2.Zero;
+
     /// <summary>ExVersion row ids for the shared-fate expansions the user has enabled (3=ShB,4=EW,5=DT).</summary>
     public IEnumerable<uint> SelectedSharedFateExpansions()
     {

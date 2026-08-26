@@ -20,6 +20,8 @@ namespace Autofate.Core;
 public sealed unsafe class FarmingController
 {
     public bool Running { get; private set; }
+    /// <summary>Run is held: nav + combat backends are off, but the session and its state survive.</summary>
+    public bool Paused { get; private set; }
     public FarmState State { get; private set; } = FarmState.Idle;
     public StopReason LastStopReason { get; private set; } = StopReason.None;
     /// <summary>Last validation error from a failed Start (missing required plugin). Shown on Status tab.</summary>
@@ -60,6 +62,9 @@ public sealed unsafe class FarmingController
     // re-interact->reopen loop: ShouldShop() can still read true after buying, so we must not let
     // the NPC-interact fall-through fire again within the same visit.
     private bool _shoppingDone;
+
+    // What we were doing when the user hit pause, so the overlay can show it while held.
+    private string _pausedDoing = string.Empty;
 
     // The farming state we were in before diverting to gemstone shopping. When shopping completes
     // we return directly to this (fate grinding / chocobo loop) instead of routing back through the
@@ -144,6 +149,7 @@ public sealed unsafe class FarmingController
         LastStartError = string.Empty;
 
         Running = true;
+        Paused = false;
         LastStopReason = StopReason.None;
         Stats.Reset();
         _zoneRotationIndex = 0;
@@ -182,6 +188,7 @@ public sealed unsafe class FarmingController
     {
         if (!Running) return;
         Running = false;
+        Paused = false;
         LastStopReason = reason;
         State = FarmState.Stopped;
         StatusText = $"Stopped ({reason})";
@@ -208,10 +215,61 @@ public sealed unsafe class FarmingController
         else Start();
     }
 
+    /// <summary>
+    /// Hold the run in place: stop navigation, shut every combat/movement backend down, but keep
+    /// Running, the current state and all session counters. What we CANNOT do is unwind a dialogue
+    /// or cutscene already in flight, and with the AI backend off nothing is dodging for us, so
+    /// pausing mid-pull is dangerous.
+    /// </summary>
+    public void Pause()
+    {
+        if (!Running || Paused) return;
+        Paused = true;
+        _pausedDoing = StatusText;
+        StatusText = $"Paused - held at: {_pausedDoing}";
+        Stats.OnPaused();
+        Navigator.Stop();
+        IPCManager.ShutdownAll();
+        TextAdvanceIPC.Disable();
+        _combatBackendActive = false; // re-sync the latch so Resume re-issues
+        Svc.Chat.Print("[Autofate] Paused.");
+        Svc.Log.Information($"[Autofate] Paused in state {State}");
+    }
+
+    /// <summary>Pick the run back up where it left off.</summary>
+    public void Resume()
+    {
+        if (!Running || !Paused) return;
+        Paused = false;
+        Stats.OnResumed();
+
+        // A fate we were holding has almost certainly expired over a long pause. Drop it and
+        // re-select rather than pathing to a fate that is no longer there.
+        if (State is (FarmState.InFate or FarmState.CollectTurnIn or FarmState.TravelingToFate)
+            && (_targetFateId == 0 || FateSelector.GetFateById(_targetFateId) == null))
+        {
+            _targetFateId = 0;
+            State = FarmState.SelectingFate;
+        }
+
+        StatusText = "Resuming...";
+        SetCombatBackend(true);
+        TextAdvanceIPC.Enable();
+        Svc.Chat.Print("[Autofate] Resumed.");
+        Svc.Log.Information($"[Autofate] Resumed into state {State}");
+    }
+
+    public void TogglePause()
+    {
+        if (Paused) Resume();
+        else Pause();
+    }
+
     // ---------------------------------------------------------------- main tick
     public void Tick()
     {
         if (!Running) return;
+        if (Paused) return;
         if (Player.Object == null) return;             // not logged in
         if (Svc.Condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.BetweenAreas]) return;
 

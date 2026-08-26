@@ -9,7 +9,14 @@ namespace Autofate.Core;
 public sealed class SessionStats
 {
     public DateTime StartedUtc { get; private set; } = DateTime.UtcNow;
-    public TimeSpan Runtime => DateTime.UtcNow - StartedUtc;
+
+    // Paused time is excluded from Runtime: a run left paused for an hour did not farm for an hour.
+    private TimeSpan _pausedTotal;
+    private DateTime? _pausedSince;
+
+    public TimeSpan Runtime
+        => DateTime.UtcNow - StartedUtc - _pausedTotal
+           - (_pausedSince is { } since ? DateTime.UtcNow - since : TimeSpan.Zero);
 
     public int FatesCompleted { get; private set; }
     public int FatesAttempted { get; private set; }
@@ -34,6 +41,8 @@ public sealed class SessionStats
         GemstonesGained = 0;
         Deaths = 0;
         _wasDead = false;
+        _pausedTotal = TimeSpan.Zero;
+        _pausedSince = null;
         _lastGemstoneSample = InventoryUtil.GetGemstoneCount();
         StartLevel = ECommons.GameHelpers.Player.Level;
         CurrentLevel = StartLevel;
@@ -60,6 +69,17 @@ public sealed class SessionStats
         var delta = now - _lastGemstoneSample;
         if (delta > 0) GemstonesGained += delta;
         _lastGemstoneSample = now;
+    }
+
+    /// <summary>Stop the runtime clock while the run is paused.</summary>
+    public void OnPaused() => _pausedSince ??= DateTime.UtcNow;
+
+    /// <summary>Resume the runtime clock, banking the time spent paused.</summary>
+    public void OnResumed()
+    {
+        if (_pausedSince is not { } since) return;
+        _pausedTotal += DateTime.UtcNow - since;
+        _pausedSince = null;
     }
 
     /// <summary>Call when a fate is finished (threshold met / completed).</summary>
