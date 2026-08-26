@@ -52,6 +52,17 @@ public sealed class Configuration
     /// <summary>Distance (yalms) beyond which we bother mounting before traveling.</summary>
     public float MountDistanceThreshold = 30f;
 
+    // ------------------------------------------------------------------ Aetheryte shortcut
+    /// <summary>
+    /// Before flying across a zone to a FATE, teleport to the attuned aetheryte closest to it.
+    /// Off by default: it costs gil and only pays off on the big HW+ zones with several aetherytes.
+    /// </summary>
+    public bool AutoTeleportNearestAetheryte = false;
+    /// <summary>Only consider the aetheryte shortcut when the FATE is at least this far away (yalms).</summary>
+    public float AetheryteHopMinDistance = 350f;
+    /// <summary>Only take the shortcut when the aetheryte cuts at least this much off the trip (yalms).</summary>
+    public float AetheryteHopMinSaving = 200f;
+
     // ------------------------------------------------------------------ Fate engine
     /// <summary>Continue running fates up to this many levels above the player's level.</summary>
     public int LevelsAbovePlayer = 2;

@@ -91,6 +91,23 @@ public sealed unsafe class FarmingController
     // the target — that target tug-of-war was the "flicks between the NPC and an enemy" bug.
     private bool _combatBackendActive;
 
+    // Aetheryte shortcut: when the fate we picked is far away and this zone has an attuned
+    // aetheryte closer to it, teleport there first instead of flying the whole way. Decided ONCE
+    // per fate (the latch), and any aetheryte a teleport fails to reach is dropped for the session
+    // so we don't burn 5s on it every fate.
+    private ushort _hopEvaluatedFateId;
+    private uint _hopAetheryteId;
+    private System.Numerics.Vector3 _hopDestination;
+    private long _hopIssuedMs;
+    private long _hopLastBusyMs;
+    private readonly HashSet<uint> _hopFailedAetherytes = new();
+    // How close to the aetheryte counts as "the teleport landed".
+    private const float HopArrivalDistance = 40f;
+    // Grace after issuing (or after the last busy tick) before we call the teleport a no-show.
+    private const long HopSettleMs = 4000;
+    // Hard cap on the whole hop, in case we get stuck in a loading/casting state.
+    private const long HopTimeoutMs = 45000;
+
     // Fate-travel stuck detection: if we barely move for >2s while traveling to the fate dropoff,
     // the spot is unreachable -> re-roll a NEW random LANDABLE point in the ring and go to that.
     private System.Numerics.Vector3 _fateStuckLastPos;
@@ -672,6 +689,10 @@ public sealed unsafe class FarmingController
 
         var me0 = Player.Object;
         if (me0 == null) return;
+
+        // Optional shortcut: teleport to an aetheryte closer to the fate before we start flying.
+        // Owns the tick while the teleport is in flight, so don't move us during it.
+        if (TickAetheryteHop(fate)) return;
 
         var type = FateSelector.Classify(fate);
         var insideRing = Vector3.Distance(me0.Position, fate.Position) <= fate.Radius;
@@ -1678,6 +1699,96 @@ public sealed unsafe class FarmingController
     private const float EscortNpcGlueStop = 2.5f;
 
     /// <summary>
+    /// Aetheryte shortcut for the current travel leg. Returns true while the hop owns this tick
+    /// (teleport cast / zoning), meaning the caller must NOT move us; false to travel normally.
+    /// </summary>
+    private bool TickAetheryteHop(IFate fate)
+    {
+        if (_hopIssuedMs != 0) return TickAetheryteHopInFlight();
+        if (!C.AutoTeleportNearestAetheryte) return false;
+        if (_hopEvaluatedFateId == _targetFateId) return false; // decided already for this fate
+
+        var me = Player.Object;
+        if (me == null) return false;
+
+        // Teleport can't be cast while fighting, while the client is busy, or in the air — none of
+        // those are a "no" for this fate though, so DON'T latch: re-check once we're free again.
+        if (InCombat() || ECommons.GenericHelpers.IsOccupied() || Teleporter.IsBusy()) return false;
+        if (Features.MountManager.IsFlying) return false;
+
+        _hopEvaluatedFateId = _targetFateId; // from here on it's fly-there unless we hop right now
+
+        var distToFate = Vector3.Distance(me.Position, fate.Position);
+        if (distToFate < C.AetheryteHopMinDistance) return false;
+
+        var target = Teleporter.FindNearestAetheryte(Svc.ClientState.TerritoryType, fate.Position,
+            id => !_hopFailedAetherytes.Contains(id));
+        if (target == null) return false;
+
+        var saved = distToFate - Vector3.Distance(target.Value.Position, fate.Position);
+        if (saved < C.AetheryteHopMinSaving) return false;
+        // Already standing at it: teleporting would only cost gil and a cast.
+        if (Vector3.Distance(me.Position, target.Value.Position) <= HopArrivalDistance) return false;
+
+        Navigator.Stop(); // moving cancels the cast
+        if (!Teleporter.TeleportToAetheryteId(target.Value.RowId)) return false;
+
+        _hopAetheryteId = target.Value.RowId;
+        _hopDestination = target.Value.Position;
+        _hopIssuedMs = Environment.TickCount64;
+        _hopLastBusyMs = 0;
+        Diag("Movement", "hop", $"teleporting to {target.Value.Name} for '{fate.Name}' (saves ~{saved:F0}y of {distToFate:F0}y)");
+        StatusText = $"Teleporting to {target.Value.Name}";
+        return true;
+    }
+
+    /// <summary>Wait out an issued hop. Returns true while it's still in flight.</summary>
+    private bool TickAetheryteHopInFlight()
+    {
+        var now = Environment.TickCount64;
+        var me = Player.Object;
+
+        if (now - _hopIssuedMs > HopTimeoutMs)
+        {
+            Diag("Movement", "hop", $"teleport to aetheryte {_hopAetheryteId} timed out; traveling normally");
+            _hopIssuedMs = 0;
+            return false;
+        }
+
+        // Casting or loading: hold still.
+        if (Teleporter.IsBusy() || me == null)
+        {
+            _hopLastBusyMs = now;
+            StatusText = "Teleporting to a closer aetheryte...";
+            return true;
+        }
+
+        if (Vector3.Distance(me.Position, _hopDestination) <= HopArrivalDistance)
+        {
+            _hopIssuedMs = 0; // landed — resume normal travel from here
+            return false;
+        }
+
+        // Neither busy nor there yet. The cast takes a moment to register, so give it a grace
+        // window before deciding nothing happened.
+        if (now - Math.Max(_hopIssuedMs, _hopLastBusyMs) < HopSettleMs)
+        {
+            StatusText = "Teleporting to a closer aetheryte...";
+            return true;
+        }
+
+        // No cast, no zoning, still here. If the cast NEVER started, this aetheryte is out of reach
+        // for us (not attuned, or not enough gil) -> drop it for the session so we stop paying the
+        // grace window on it every fate. If it started and then died (aggro, damage), keep the
+        // aetheryte and just fly this once.
+        var neverStarted = _hopLastBusyMs == 0 && !InCombat();
+        Diag("Movement", "hop", $"teleport to aetheryte {_hopAetheryteId} didn't land; traveling normally (blacklist={neverStarted})");
+        if (neverStarted) _hopFailedAetherytes.Add(_hopAetheryteId);
+        _hopIssuedMs = 0;
+        return false;
+    }
+
+    /// <summary>
     /// Clear per-fate carry-over state. CRITICAL: escort/collect state (especially the cached escort
     /// NPC id) must be wiped whenever we move to a NEW fate, not only via OnFateFinished — an escort
     /// fate can end WITHOUT OnFateFinished (expired, abandoned, completed by other players). If the
@@ -1701,6 +1812,9 @@ public sealed unsafe class FarmingController
         _groundJumpPhase = 0;
         _groundNudgeTarget = null;
         _inFateMountMs = 0;
+        _hopEvaluatedFateId = 0;
+        _hopIssuedMs = 0;
+        _hopLastBusyMs = 0;
     }
 
     private void OnFateFinished()
