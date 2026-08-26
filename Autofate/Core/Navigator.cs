@@ -15,6 +15,9 @@ public static class Navigator
     private static Vector3 _currentDest;
     private static Vector3 _lastIssuedDest; // last dest we actually sent to vnavmesh (re-issue when this changes)
     private static bool _active;
+    // When we started waiting on an in-flight vnavmesh pathfind (0 = not waiting).
+    private static long _pathfindWaitStartMs;
+    private const long PathfindWaitCapMs = 60000;
     // How far the destination must shift before we re-issue a path. Keeps us from spamming
     // PathfindAndMoveCloseTo for tiny mob/NPC drift each frame.
     private const float RepathThreshold = 2f;
@@ -76,13 +79,38 @@ public static class Navigator
         if (!MountManager.IsMounted)
             MountManager.Sprint();
 
+        // WAIT OUT AN IN-FLIGHT PATHFIND. vnavmesh runs one pathfind at a time on a worker and
+        // REJECTS anything sent while it is busy ("Pathfinding task is in progress..."), so
+        // re-issuing during that window achieves nothing. Long flying paths across a big zone can
+        // take tens of seconds here, and re-issuing every tick both spams the log and throws away
+        // the result we're waiting for. Sit still, let it finish, then act on it.
+        if (NavmeshIPC.PathfindInProgress())
+        {
+            var waitedMs = _pathfindWaitStartMs == 0 ? 0 : Environment.TickCount64 - _pathfindWaitStartMs;
+            if (_pathfindWaitStartMs == 0) _pathfindWaitStartMs = Environment.TickCount64;
+            // Escape hatch: the flag is reported by vnavmesh, not by us, so never let it wedge
+            // movement forever. Past PathfindWaitCapMs we fall through and issue anyway.
+            if (waitedMs < PathfindWaitCapMs)
+            {
+                if (c.VerboseLogging && ECommons.Throttlers.EzThrottler.Throttle("AF_NavPathfinding", 5000))
+                    Svc.Log.Information($"[Diag/Travel] waiting for vnavmesh pathfind ({dist:F0}y to go, fly={fly}, waited {waitedMs / 1000}s)");
+                return false;
+            }
+            if (ECommons.Throttlers.EzThrottler.Throttle("AF_NavPathfindingCap", 10000))
+                Svc.Log.Warning($"[Navigator] vnavmesh has reported a pathfind in progress for {waitedMs / 1000}s; issuing anyway.");
+        }
+        else
+        {
+            _pathfindWaitStartMs = 0;
+        }
+
         // Hand the destination to vnavmesh; let it perform takeoff itself (don't manually jump).
         // RE-ISSUE when the destination has shifted meaningfully since the last path we sent —
         // otherwise after killing mob A we'd stay idling toward A's last position while already
         // targeting mob B (vnav.IsRunning was still true, so we'd skip re-pathing and stand still
-        // staring at the new target). We also issue when nothing is running/pathfinding.
+        // staring at the new target). We also issue when nothing is running.
         var destChanged = Vector3.DistanceSquared(_lastIssuedDest, dest) > RepathThreshold * RepathThreshold;
-        var idle = !NavmeshIPC.IsRunning() && !NavmeshIPC.PathfindInProgress();
+        var idle = !NavmeshIPC.IsRunning();
         if (idle || destChanged)
         {
             NavmeshIPC.PathfindAndMoveCloseTo(dest, stopRange, fly && MountManager.IsMounted);
@@ -149,5 +177,6 @@ public static class Navigator
         // Clear the last-issued dest so the next MoveTo unconditionally re-issues a path (even if
         // it targets roughly the same position as before).
         _lastIssuedDest = default;
+        _pathfindWaitStartMs = 0;
     }
 }
