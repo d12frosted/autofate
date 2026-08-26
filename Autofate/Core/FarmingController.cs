@@ -44,6 +44,9 @@ public sealed unsafe class FarmingController
         Svc.Log.Info($"[Diag/{area}] {msg}");
     }
 
+    // Last state we logged a transition for (see Tick).
+    private FarmState _lastLoggedState = FarmState.Idle;
+
     // Active target fate + zone bookkeeping.
     private ushort _targetFateId;
     private uint _targetTerritory;
@@ -289,6 +292,15 @@ public sealed unsafe class FarmingController
         if (Paused) return;
         if (Player.Object == null) return;             // not logged in
         if (Svc.Condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.BetweenAreas]) return;
+
+        // One line per state change, so a log tells you where the time went without guessing from
+        // the combat/movement chatter. Logged at the top of the tick AFTER the transition, so
+        // StatusText already describes the state we moved into.
+        if (_lastLoggedState != State)
+        {
+            if (C.VerboseLogging) Svc.Log.Information($"[Diag/State] {_lastLoggedState} -> {State} | {StatusText}");
+            _lastLoggedState = State;
+        }
 
         Stats.CurrentLevel = Player.Level;
         Stats.SampleGemstones();
@@ -670,6 +682,18 @@ public sealed unsafe class FarmingController
         }
         _postFateGraceUntilMs = 0; // committing now -> clear the grace window
 
+        if (C.VerboseLogging)
+        {
+            // Why this fate and not the closer one: dump every candidate with its distance and
+            // timer next to the pick. With PrioritizeLowTimer on, the nearest fate is NOT expected
+            // to win unless it's within the proximity override.
+            var alts = string.Join(", ", FateSelector.GetCandidates(C)
+                .OrderBy(x => x.Distance)
+                .Select(x => $"'{x.Fate.Name}' {x.Distance:F0}y/{x.TimeRemaining}s"));
+            Svc.Log.Information($"[Diag/Fate] picked '{best.Value.Fate.Name}' {best.Value.Distance:F0}y/"
+                + $"{best.Value.TimeRemaining}s type={best.Value.Type} prioritizeLowTimer={C.PrioritizeLowTimer} | {alts}");
+        }
+
         _targetFateId = best.Value.Fate.FateId;
         _startedFateId = 0; // new fate -> allow the start-NPC talk again
         _fateNpcInteractedMs = 0; // clear the post-interact hold for the new fate
@@ -754,6 +778,12 @@ public sealed unsafe class FarmingController
         }
 
         StatusText = $"Traveling to fate: {fate.Name}";
+        if (EzThrottler.Throttle("AF_TravelProgress", 5000))
+            Diag("Travel", "progress", $"'{fate.Name}' fateDist={Vector3.Distance(me0.Position, fate.Position):F0}y "
+                + $"dropoffDist={Vector3.Distance(me0.Position, _fateDropoff.Value):F0}y "
+                + $"navRunning={NavmeshIPC.IsRunning()} pathfinding={NavmeshIPC.PathfindInProgress()} "
+                + $"mounted={Features.MountManager.IsMounted} flying={Features.MountManager.IsFlying} "
+                + $"meshReady={NavmeshIPC.MeshReady()}");
         Navigator.MoveTo(C, _fateDropoff.Value, 4f, allowMount: true);
     }
 
