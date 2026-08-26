@@ -99,6 +99,25 @@ public static class IPCManager
     /// <summary>Engage the configured combat backends (rotation + movement/dodge).</summary>
     public static void StartCombat(Configuration c)
     {
+        StartRotation(c);
+
+        // Movement is always the hybrid: turn BMR's AI on so it handles in-combat repositioning +
+        // AOE dodging (vnav handles travel/approach via Navigator).
+        SetAi(true);
+
+        // Whenever BMR is in play (rotation OR movement/AI), push the FATE-scoping hint so BMR's
+        // AutoTarget excludes mobs from fates we're not part of and respects our pull cap. Harmless
+        // no-op if the preset/module isn't available.
+        ApplyBmrFateTargeting(c);
+    }
+
+    /// <summary>
+    /// Start ONLY the damage rotation. Split out from the AI so a travel leg can run with the
+    /// rotation off — nothing picks fights with whatever we pass on the way — while BMR's AI stays
+    /// on and keeps dodging.
+    /// </summary>
+    public static void StartRotation(Configuration c)
+    {
         switch (c.RotationBackend)
         {
             case CombatBackend.WrathCombo: WrathComboIPC.Enable(); break;
@@ -113,16 +132,21 @@ public static class IPCManager
         // features active on its own (independent of our IPC lease), which would fight our backend.
         if (c.RotationBackend != CombatBackend.WrathCombo && WrathComboIPC.IsInstalled)
             WrathComboIPC.Disable();
-
-        // Movement is always the hybrid: turn BMR's AI on so it handles in-combat repositioning +
-        // AOE dodging (vnav handles travel/approach via Navigator).
-        BossModIPC.AiEnable(true);
-
-        // Whenever BMR is in play (rotation OR movement/AI), push the FATE-scoping hint so BMR's
-        // AutoTarget excludes mobs from fates we're not part of and respects our pull cap. Harmless
-        // no-op if the preset/module isn't available.
-        ApplyBmrFateTargeting(c);
     }
+
+    /// <summary>Stop ONLY the damage rotation, leaving BMR's AI (movement / AOE dodging) alone.</summary>
+    public static void StopRotation(Configuration c)
+    {
+        switch (c.RotationBackend)
+        {
+            case CombatBackend.WrathCombo: WrathComboIPC.Disable(); break;
+            case CombatBackend.RotationSolverReborn: RotationSolverIPC.SetOff(); break;
+            case CombatBackend.BossModReborn: BossModIPC.ClearActivePreset(); break;
+        }
+    }
+
+    /// <summary>Turn BMR's AI (in-combat movement + AOE dodging) on or off. Change-guarded inside.</summary>
+    public static void SetAi(bool enable) => BossModIPC.AiEnable(enable);
 
     /// <summary>
     /// Tell BossMod's AutoTarget to prioritize the current FATE's mobs (and ignore foreign-fate
@@ -143,15 +167,10 @@ public static class IPCManager
 
     public static void StopCombat(Configuration c)
     {
-        switch (c.RotationBackend)
-        {
-            case CombatBackend.WrathCombo: WrathComboIPC.Disable(); break;
-            case CombatBackend.RotationSolverReborn: RotationSolverIPC.SetOff(); break;
-            case CombatBackend.BossModReborn: BossModIPC.ClearActivePreset(); break;
-        }
+        StopRotation(c);
 
         // Movement is always BMR-AI hybrid -> always turn it off on stop.
-        BossModIPC.AiEnable(false);
+        SetAi(false);
     }
 
     /// <summary>
