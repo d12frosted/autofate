@@ -730,9 +730,15 @@ public sealed unsafe class FarmingController
         // right before we landed. Suppress the check when we're already close to the dropoff.
         var nowMs = Environment.TickCount64;
         var nearDropoff = Vector3.Distance(me0.Position, _fateDropoff.Value) <= 8f;
-        if (nearDropoff)
+        // WAITING ON vnavmesh IS NOT BEING STUCK. A long flying pathfind can take tens of seconds,
+        // and standing still during it is exactly what it looks like. Re-rolling the dropoff then
+        // made it worse: every re-roll changed the destination, so the path we finally got back was
+        // for a point we no longer wanted, and we'd start the whole wait again. Same for mounting
+        // and any other occupied state.
+        var waitingOnNav = NavmeshIPC.PathfindInProgress() || ECommons.GenericHelpers.IsOccupied();
+        if (nearDropoff || waitingOnNav)
         {
-            _fateStuckLastSampleMs = 0; // reset the sampler; we're landing, not stuck
+            _fateStuckLastSampleMs = 0; // reset the sampler; we're landing or waiting, not stuck
         }
         else if (_fateStuckLastSampleMs == 0) { _fateStuckLastSampleMs = nowMs; _fateStuckLastPos = me0.Position; }
         else if (nowMs - _fateStuckLastSampleMs >= FateStuckWindowMs)
