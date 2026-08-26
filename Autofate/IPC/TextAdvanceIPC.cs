@@ -50,7 +50,7 @@ public static class TextAdvanceIPC
     /// Take external control for the ENTIRE farming session so TextAdvance handles ALL of our
     /// dialogue: Talk advancing/skip, Yes/No confirmations, reward/quest pickers, cutscene skips,
     /// and the collect-fate Request window (fill + hand over). We drive movement and the actual
-    /// NPC/object interaction ourselves (so we deliberately do NOT enable AutoInteract).
+    /// NPC/object interaction ourselves (so we explicitly turn AutoInteract off).
     ///
     /// SELF-HEALING: TextAdvance can silently DROP external control on its own (zone change, its own
     /// timeout, another consumer, plugin reload). We must NOT rely solely on our local latch — if we
@@ -79,10 +79,15 @@ public static class TextAdvanceIPC
             EnableRewardPick = true,
             EnableCutsceneEsc = true,
             EnableCutsceneSkipConfirm = true,
-            // NOT QuestAccept/QuestComplete: we never accept/complete quests while fate-farming, and
-            // those flags make TextAdvance hand off to the Questionable plugin. We confirm fate-join
-            // Yes/No prompts ourselves, so we don't need them.
-            // NOT AutoInteract: we target + interact with NPCs/objects ourselves.
+            // Explicitly OFF, not just left unset: a null field means "keep whatever the user has
+            // configured in TextAdvance", so the only way to guarantee these stay off is to send
+            // false. We never accept/complete quests while fate-farming, and those flags make
+            // TextAdvance hand off to the Questionable plugin. We confirm fate-join Yes/No prompts
+            // ourselves, so we don't need them.
+            EnableQuestAccept = false,
+            EnableQuestComplete = false,
+            // Same here: we target + interact with NPCs/objects ourselves.
+            EnableAutoInteract = false,
         };
         try
         {
