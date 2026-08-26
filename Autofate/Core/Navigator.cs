@@ -58,9 +58,12 @@ public static class Navigator
             if (ECommons.Throttlers.EzThrottler.Throttle("AF_NavBuilding", 3000))
             {
                 var p = NavmeshIPC.BuildProgress();
-                Svc.Log.Debug(p is >= 0 and < 1
-                    ? $"[Navigator] Waiting for navmesh build: {p * 100:0}%"
-                    : "[Navigator] Waiting for navmesh to be ready...");
+                // Information, not Debug: dalamud's default log level hides Debug, and "we are
+                // standing still because the mesh isn't ready" is exactly what you need to see.
+                var msg = p is >= 0 and < 1
+                    ? $"[Diag/Travel] waiting for navmesh build: {p * 100:0}%"
+                    : "[Diag/Travel] waiting for navmesh to be ready...";
+                if (c.VerboseLogging) Svc.Log.Information(msg);
             }
             return false;
         }
