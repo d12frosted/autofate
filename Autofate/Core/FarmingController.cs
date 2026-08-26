@@ -89,10 +89,13 @@ public sealed unsafe class FarmingController
     // full batch, hand it in, repeat until the fate hits 100% (or runs dry of ground items).
     private const int CollectBatchSize = 10; // collect fates reward "gold" at 10 turned in
 
-    // Tracks whether the rotation backend is currently running (so we toggle it only on transitions,
-    // not every tick). During collect HandIn/Pickup we STOP the backend so it doesn't fight us for
-    // the target — that target tug-of-war was the "flicks between the NPC and an enemy" bug.
-    private bool _combatBackendActive;
+    // Tracks whether the rotation backend / BMR AI are currently running (so we toggle them only on
+    // transitions, not every tick). During collect HandIn/Pickup we STOP the rotation so it doesn't
+    // fight us for the target — that target tug-of-war was the "flicks between the NPC and an
+    // enemy" bug. The two are tracked separately because travel turns the rotation off while
+    // leaving the AI on to dodge.
+    private bool _rotationActive;
+    private bool _aiActive;
 
     // Aetheryte shortcut: when the fate we picked is far away and this zone has an attuned
     // aetheryte closer to it, teleport there first instead of flying the whole way. Decided ONCE
@@ -142,10 +145,28 @@ public sealed unsafe class FarmingController
     private const float GroundStuckMinMove = 2f;
     private void SetCombatBackend(bool active)
     {
-        if (_combatBackendActive == active) return;
-        _combatBackendActive = active;
-        if (active) IPCManager.StartCombat(C);
-        else IPCManager.StopCombat(C);
+        SetRotationActive(active);
+        SetAiActive(active);
+    }
+
+    /// <summary>
+    /// The damage rotation on its own. Travel legs run with this OFF so the rotation doesn't pick
+    /// fights with everything we pass, while BMR's AI stays on and keeps dodging.
+    /// </summary>
+    private void SetRotationActive(bool active)
+    {
+        if (_rotationActive == active) return;
+        _rotationActive = active;
+        if (active) IPCManager.StartRotation(C);
+        else IPCManager.StopRotation(C);
+    }
+
+    /// <summary>BMR's AI (in-combat movement + AOE dodging).</summary>
+    private void SetAiActive(bool active)
+    {
+        if (_aiActive == active) return;
+        _aiActive = active;
+        IPCManager.SetAi(active);
     }
 
 
@@ -217,7 +238,8 @@ public sealed unsafe class FarmingController
         // vnavmesh) regardless of the configured backend, so nothing keeps running after Stop.
         IPCManager.ShutdownAll();
         TextAdvanceIPC.Disable();     // release any collect turn-in control
-        _combatBackendActive = false; // re-sync the combat latch so the next Start re-issues
+        _rotationActive = false;      // re-sync the combat latches so the next Start re-issues
+        _aiActive = false;
 
         Svc.Chat.Print($"[Autofate] Farming stopped: {reason}.");
         Svc.Log.Information($"[Autofate] Stopped: {reason}");
@@ -251,7 +273,8 @@ public sealed unsafe class FarmingController
         Navigator.Stop();
         IPCManager.ShutdownAll();
         TextAdvanceIPC.Disable();
-        _combatBackendActive = false; // re-sync the latch so Resume re-issues
+        _rotationActive = false;      // re-sync the latches so Resume re-issues
+        _aiActive = false;
         Svc.Chat.Print("[Autofate] Paused.");
         Svc.Log.Information($"[Autofate] Paused in state {State}");
     }
@@ -359,6 +382,15 @@ public sealed unsafe class FarmingController
             TickFollowLeader();
             return;
         }
+
+        // QUIET TRAVEL: no rotation while we're picking a fate or on the way to one. The rotation
+        // (and BMR's AutoTarget with it) otherwise engages whatever we happen to pass, which is
+        // both a detour and a good way to arrive at the fate in combat with something else. BMR's
+        // AI stays on so AOEs are still dodged, and the stray-aggro guard above hands us to
+        // ClearingAggro — which turns the rotation back on — the moment something actually hits us.
+        if (State is FarmState.SelectingZone or FarmState.TravelingToZone
+                  or FarmState.SelectingFate or FarmState.TravelingToFate)
+            SetRotationActive(false);
 
         switch (State)
         {
