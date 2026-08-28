@@ -92,11 +92,18 @@ fi
 [ -d "$XOM_ROOT" ] || die "XIV on Mac setup not found at: $XOM_ROOT (set XOM_ROOT to override)"
 [ -f "$DALAMUD_CONFIG" ] || die "no dalamud config at: $DALAMUD_CONFIG"
 
+# dalamud's crash handler carries the game's own path in its command line, and it
+# outlives the game often enough that matching the path alone reports a game that
+# quit hours ago. match the game process itself.
+game_running() {
+    pgrep -fl "ffxiv_dx11" 2>/dev/null | grep -vi "DalamudCrashHandler" | grep -q .
+}
+
 # dalamud holds its configuration in memory and writes the whole file out when
 # the game exits, so anything edited underneath a running game is thrown away.
 assert_game_stopped() {
     [ "$DRY" -eq 1 ] && return 0
-    if pgrep -f "ffxiv_dx11" >/dev/null 2>&1; then
+    if game_running; then
         [ "$FORCE" -eq 1 ] || die "FFXIV looks like it is running - quit the game first (or pass --force)"
         info "warning: FFXIV appears to be running, dalamud will overwrite this on exit"
     fi
