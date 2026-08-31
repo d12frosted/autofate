@@ -89,6 +89,31 @@ public sealed unsafe class FarmingController
     // full batch, hand it in, repeat until the fate hits 100% (or runs dry of ground items).
     private const int CollectBatchSize = 10; // collect fates reward "gold" at 10 turned in
 
+    // A collect fate runs to a fixed number of hand-ins (20 on effectively every one of them). We
+    // don't need that number to farm the fate, but we do need to know when the batch in our bags is
+    // the one that CLOSES it: past that point every mob killed and every item grabbed is thrown
+    // away, so the batch goes in immediately instead of after the next fight.
+    private const int CollectDefaultGoal = 20;
+    // Sanity window for a derived goal: real collect fates ask for somewhere between 8 and 40
+    // items. Outside that, HandInCount isn't counting what we think it is and we use the default.
+    private const int CollectMinGoal = 8;
+    private const int CollectMaxGoal = 40;
+    // Last phase: with this little time left, another gather-fight-carry cycle doesn't fit. We
+    // deliver what we hold (it still counts) and move to a fate that can still pay out.
+    private const long CollectEndgameSeconds = 60;
+    // Delivering with a train behind us: a mob this low is finished off (a couple of GCDs) rather
+    // than dragged to the NPC, since killing it is what actually removes it. Healthier ones are
+    // outrun instead.
+    private const float CollectFinishHpFraction = 0.30f;
+    private const float CollectFinishRange = 5f;   // it has to be in reach: we stand still to kill it
+    private const long CollectFinishTimeoutMs = 6000; // and if it isn't dead by then, it isn't dying
+    // Shedding: we run the spawn-center -> NPC line out past the ring, where fate mobs leash off,
+    // then walk back to a quiet NPC. Bounded — a hand-in with mobs on us still beats no hand-in.
+    private const float CollectShedMargin = 15f;      // yalms past the fate radius
+    private const long CollectShedTimeoutMs = 10000;
+    private const long CollectShedCooldownMs = 20000; // one shed run per delivery, not a ping-pong
+    private const float CollectQuietRange = 12f;      // an attacker this close = not clear to turn in
+
     // Tracks whether the rotation backend / BMR AI are currently running (so we toggle them only on
     // transitions, not every tick). During collect HandIn/Pickup we STOP the rotation so it doesn't
     // fight us for the target — that target tug-of-war was the "flicks between the NPC and an
@@ -1008,6 +1033,14 @@ public sealed unsafe class FarmingController
     private long _collectInteractCooldownMs;
     private ulong _collectInteractObjId;
     private const long CollectInteractCooldownMs = 2000;
+    // Collect delivery run: where we're running to shake the mobs off before a hand-in, when that
+    // run gives up, and until when we've stopped trying (so a mob that won't leash can't loop us).
+    private Vector3? _collectShedPoint;
+    private long _collectShedDeadlineMs;
+    private long _collectShedBlockedUntilMs;
+    // The mob we stopped to finish off on the way to the NPC, and when we give up on it.
+    private ulong _collectFinishTargetId;
+    private long _collectFinishDeadlineMs;
     private ushort _startedFateId; // fate we've already done the start-NPC talk for (don't repeat)
     private long _fateStartConfirmedMs;
     // After a FATE completes, MANY fates immediately spawn a chained replacement at (or near) the
@@ -1518,9 +1551,26 @@ public sealed unsafe class FarmingController
 
         var moreItemsOnGround = FateTargeting.GetNearestCollectable(_targetFateId) != null;
 
-        // HAND IN a FULL batch first (efficient, contributes to the shared bar).
+        // LAST PHASE. The fate is only running out its clock now: there is no time left to gather,
+        // carry and deliver another batch, and kills on their own pay nothing here. Deliver what we
+        // hold (it still counts) and, once our hands are empty, the caller moves us on.
+        if (IsCollectEndgame(fate))
+            return have > 0 ? CollectGoal.HandIn : CollectGoal.None;
+
+        // CLOSER. What we're carrying already finishes the fate, so it goes in NOW — anything we
+        // kill or pick up past this point is thrown away.
+        if (have > 0 && have >= CollectItemsToFinish(fate))
+            return CollectGoal.HandIn;
+
+        // HAND IN a FULL batch (efficient, contributes to the shared bar).
         if (have >= CollectBatchSize)
             return CollectGoal.HandIn;
+
+        // GATHER while nothing is on us. The items are the objective; mobs only matter because they
+        // drop more of them. So with something on the ground and nobody hitting us, grabbing it
+        // beats opening a fight we would then have to finish before we could gather again.
+        if (moreItemsOnGround && !InCombat() && FateTargeting.GetEnemiesAttackingMe().Count == 0)
+            return CollectGoal.Pickup;
 
         // FIGHT if there are enemies in OUR fate. Others may have already started it and the enemies
         // ARE the work (they drop the collectables) — going to fight them beats trekking to the start
@@ -1537,6 +1587,43 @@ public sealed unsafe class FarmingController
             return CollectGoal.HandIn;
 
         return CollectGoal.None;
+    }
+
+    /// <summary>True once a collect fate is just running out its clock (its last phase).</summary>
+    private static bool IsCollectEndgame(IFate fate)
+    {
+        var left = fate.TimeRemaining;
+        return left > 0 && left <= CollectEndgameSeconds;
+    }
+
+    /// <summary>
+    /// How many more hand-ins would close this fate out. The bar is a straight percentage of the
+    /// goal and the client counts the hand-ins made so far, so one item is worth
+    /// Progress/HandInCount percent. We only trust that where it lands inside the range collect
+    /// fates actually use, and otherwise assume the standard 20-item goal. Erring low is cheap (one
+    /// extra trip to the NPC, the items still count); erring high is what leaves us fighting a fate
+    /// we could have finished.
+    /// </summary>
+    private static int CollectItemsToFinish(IFate fate)
+    {
+        var remaining = 100 - fate.Progress;
+        if (remaining <= 0) return 0;
+        return Math.Max(1, (int)Math.Ceiling(remaining / CollectPercentPerItem(fate)));
+    }
+
+    private static float CollectPercentPerItem(IFate fate)
+    {
+        try
+        {
+            int handed = fate.HandInCount, progress = fate.Progress;
+            if (handed > 0 && progress > 0)
+            {
+                var perItem = progress / (float)handed;
+                if (perItem >= 100f / CollectMaxGoal && perItem <= 100f / CollectMinGoal) return perItem;
+            }
+        }
+        catch { /* HandInCount can throw in some states */ }
+        return 100f / CollectDefaultGoal;
     }
 
     private unsafe void HandleCollectFate(IFate fate)
@@ -1582,13 +1669,16 @@ public sealed unsafe class FarmingController
         }
 
         var goal = GetCollectGoal(fate, collectItemId, have);
-        Diag("Collect", "goal", $"goal={goal} item={collectItemId} have={have} progress={fate.Progress} groundItems={(FateTargeting.GetNearestCollectable(_targetFateId) != null)} inCombat={InCombat()}");
+        Diag("Collect", "goal", $"goal={goal} item={collectItemId} have={have} need={CollectItemsToFinish(fate)} progress={fate.Progress} timeLeft={fate.TimeRemaining}s groundItems={(FateTargeting.GetNearestCollectable(_targetFateId) != null)} inCombat={InCombat()} attackers={FateTargeting.GetEnemiesAttackingMe().Count}");
 
         // SINGLE-OWNER RULE: for every goal EXCEPT Fight, the rotation backend must be OFF. If it's
         // running it will re-target an enemy every frame and fight us for Svc.Targets.Target — that
         // is the "flicks between the NPC and an enemy without doing anything" bug. We only turn the
-        // backend on for the Fight goal (something is actively attacking us).
-        SetCombatBackend(goal == CollectGoal.Fight);
+        // backend on for the Fight goal (something is actively attacking us). HandIn is the one
+        // exception to who decides: the delivery run flips the rotation on and off itself for
+        // finishing blows, so setting it here too would toggle it twice a tick.
+        if (goal != CollectGoal.HandIn)
+            SetCombatBackend(goal == CollectGoal.Fight);
 
         switch (goal)
         {
@@ -1610,6 +1700,13 @@ public sealed unsafe class FarmingController
                 // Fate done, or waiting for items to respawn / combat to clear. Don't touch the
                 // target (no flicker); just idle near the centre so we're positioned for the next item.
                 if (fate.Progress >= 100) { OnFateFinished(); return; }
+                // Last phase and our hands are empty: this fate cannot pay us anything more, so
+                // stop feeding it kills and go find one that can.
+                if (IsCollectEndgame(fate))
+                {
+                    AbandonFate($"collect fate '{fate.Name}' is in its last phase ({fate.TimeRemaining}s left) with nothing to hand in");
+                    return;
+                }
                 StatusText = $"Collect fate: {fate.Name} {fate.Progress}% (have {have})";
                 if (!BmrMovementActive())
                     Navigator.MoveTo(C, fate.Position, Math.Max(2f, fate.Radius * 0.5f), allowMount: false);
@@ -1617,8 +1714,15 @@ public sealed unsafe class FarmingController
         }
     }
 
-    /// <summary>Walk to the objective NPC and interact to open the turn-in window. Combat backend is
-    /// already OFF (caller guarantees), so nothing competes for the target.</summary>
+    /// <summary>
+    /// Deliver what we are carrying. This is a committed run, not a stroll: the mobs that were on us
+    /// while gathering come with us, and an interact only fires while standing still and not
+    /// animation-locked, so a train at the NPC is what makes a hand-in drag on (or kill us holding a
+    /// full batch). We play it the way you would by hand — finish off whatever is already dying,
+    /// outrun the rest along the spawn-center -> NPC line where fate mobs leash, then turn in clean.
+    /// The combat backend is OFF (caller guarantees) apart from those finishing blows, so nothing
+    /// competes for the target.
+    /// </summary>
     private unsafe void CollectHandIn(IFate fate, int have)
     {
         var npc = FateTargeting.GetCollectTurnInNpc(_targetFateId);
@@ -1631,6 +1735,66 @@ public sealed unsafe class FarmingController
         var me = Player.Object;
         if (me == null) return;
 
+        // WE own movement AND the backend for the whole delivery. BMR's AI would keep repositioning
+        // us around the very mobs we are trying to leave behind, which is the opposite of running
+        // away in a straight line; the rotation only comes on for the finishing blows below.
+        SetAiActive(false);
+        if (BmrMovementActive()) IPCManager.SetBmrMovement(false);
+
+        var now = Environment.TickCount64;
+        var attackers = FateTargeting.GetEnemiesAttackingMe();
+
+        // FINISH OFF what is already dying: a couple of GCDs removes it for good, whereas outrunning
+        // something at 10% HP wastes the kill and dragging it to the NPC just moves the problem.
+        var finishable = attackers.FirstOrDefault(e =>
+            e.MaxHp > 0 && e.CurrentHp / (float)e.MaxHp <= CollectFinishHpFraction
+            && Vector3.Distance(me.Position, e.Position) <= CollectFinishRange);
+        // Standing still to kill something only pays off if it dies. If it hasn't by now (out of
+        // our reach, healing, whatever), give up on THIS mob and run — trading hits with it in the
+        // middle of a delivery is exactly the stall we're trying to get rid of.
+        if (finishable != null && finishable.GameObjectId == _collectFinishTargetId && now >= _collectFinishDeadlineMs)
+            finishable = null;
+        if (finishable != null)
+        {
+            if (finishable.GameObjectId != _collectFinishTargetId)
+            {
+                _collectFinishTargetId = finishable.GameObjectId;
+                _collectFinishDeadlineMs = now + CollectFinishTimeoutMs;
+            }
+            Navigator.Stop();
+            if (Svc.Targets.Target?.GameObjectId != finishable.GameObjectId)
+                Svc.Targets.Target = finishable;
+            SetRotationActive(true); // rotation ONLY — BMR's AI stays off so nothing moves us
+            FateTargeting.StartAutoAttack(finishable);
+            StatusText = $"Collect: finishing {finishable.Name} before turning in";
+            return;
+        }
+        SetRotationActive(false);
+
+        // Mobs on our chocobo don't stop us interacting, so only the ones actually on US count.
+        var onUs = attackers.Where(e => e.TargetObjectId == me.GameObjectId).ToList();
+        bool Crowded() => onUs.Any(e => Vector3.Distance(me.Position, e.Position) <= CollectQuietRange);
+
+        // SHED RUN in progress: keep running the line until they drop us or we run out of patience.
+        if (_collectShedPoint is { } shedPoint)
+        {
+            if (!Crowded() || now >= _collectShedDeadlineMs)
+            {
+                Diag("Collect", "shed", Crowded()
+                    ? "shed run timed out with mobs still on us -> handing in anyway"
+                    : "shed run worked, we're clear -> back to the NPC");
+                // One shed run per delivery either way: a mob that won't leash isn't worth the fate.
+                _collectShedBlockedUntilMs = now + CollectShedCooldownMs;
+                _collectShedPoint = null;
+            }
+            else
+            {
+                Navigator.MoveTo(C, shedPoint, 3f, allowMount: false);
+                StatusText = $"Collect: shaking off {onUs.Count} mob(s) before turning in";
+                return;
+            }
+        }
+
         if (Vector3.Distance(me.Position, npc.Position) > 4f)
         {
             Navigator.MoveTo(C, npc.Position, 3f, allowMount: false);
@@ -1638,10 +1802,37 @@ public sealed unsafe class FarmingController
             return;
         }
 
+        // At the NPC with a train still on us: shake it before interacting.
+        if (now >= _collectShedBlockedUntilMs && Crowded())
+        {
+            _collectShedPoint = CollectShedPoint(fate, npc);
+            _collectShedDeadlineMs = now + CollectShedTimeoutMs;
+            Diag("Collect", "shed", $"{onUs.Count} mob(s) on us at the NPC -> running out to {_collectShedPoint}");
+            return;
+        }
+
         // Set the NPC target ONCE and keep it (backend is off, so it stays put — no flicker).
         if (Svc.Targets.Target?.GameObjectId != npc.GameObjectId)
             Svc.Targets.Target = npc;
         TryCollectInteract(npc, $"Collect: interacting with {npc.Name}");
+    }
+
+    /// <summary>
+    /// Where to run to drop the mobs on our back: along the spawn-center -> NPC line and out past
+    /// the ring, where fate mobs leash off. Straight out from the center if the NPC stands on it.
+    /// </summary>
+    private static Vector3 CollectShedPoint(IFate fate, IGameObject npc)
+    {
+        var dir = npc.Position - fate.Position;
+        dir.Y = 0;
+        if (dir.LengthSquared() < 1f)
+        {
+            var me = Player.Object;
+            dir = me != null ? me.Position - fate.Position : Vector3.UnitX;
+            dir.Y = 0;
+            if (dir.LengthSquared() < 1f) dir = Vector3.UnitX;
+        }
+        return fate.Position + Vector3.Normalize(dir) * (Math.Max(fate.Radius, 10f) + CollectShedMargin);
     }
 
     /// <summary>Walk to the nearest ground collectable and interact to pick it up. Combat backend is
@@ -1981,6 +2172,11 @@ public sealed unsafe class FarmingController
         _massPullTargetId = 0;
         _collectInteractObjId = 0;
         _collectInteractCooldownMs = 0;
+        _collectShedPoint = null;
+        _collectShedDeadlineMs = 0;
+        _collectShedBlockedUntilMs = 0;
+        _collectFinishTargetId = 0;
+        _collectFinishDeadlineMs = 0;
         _yieldUntilMs = 0;
         _fatePosSampled = false;
         _ringMovedFollow = false;
@@ -1995,38 +2191,58 @@ public sealed unsafe class FarmingController
         _hopLastBusyMs = 0;
     }
 
-    private void OnFateFinished()
+    private void OnFateFinished() => LeaveFate(completed: true);
+
+    /// <summary>
+    /// Walk away from a fate that has nothing left to give us — a collect fate in its last phase
+    /// with an empty bag. Same cleanup as a completion, but it is not one: it must not count towards
+    /// the session's fates, the per-zone quotas, or the chocobo XP check (which reads "no XP this
+    /// fate" as a rank-cap stall).
+    /// </summary>
+    private void AbandonFate(string reason)
     {
-        Stats.OnFateCompleted();
-        Features.ChocoboManager.CheckXpGainAfterFate(); // detect rank-cap stall (no XP gained this fate)
+        if (C.VerboseLogging) Svc.Log.Information($"[Diag/Fate] abandoning fate {_targetFateId}: {reason}");
+        LeaveFate(completed: false);
+    }
+
+    private void LeaveFate(bool completed)
+    {
+        if (completed)
+        {
+            Stats.OnFateCompleted();
+            Features.ChocoboManager.CheckXpGainAfterFate(); // detect rank-cap stall (no XP gained this fate)
+        }
         Navigator.Stop();
         _yieldUntilMs = 0; // clear the smart-mix yield latch
         _engagedTargetId = 0; // drop the sticky combat target so the next fate re-selects fresh
         _massPullTargetId = 0; // drop the sticky body-pull target too
         TextAdvanceIPC.Disable(); // release collect turn-in control (no-op if we never took it)
 
-        // In Shared FATEs mode, re-open the Shared FATE window to repopulate per-zone progress, but
-        // only every 5 completed fates (opening the window is disruptive, so we don't do it every
-        // fate). EnsureData will re-capture and spam-close it on the following ticks.
-        if (C.Mode == FarmingMode.SharedFates)
+        if (completed)
         {
-            _fatesSinceFateDataRefresh++;
-            if (_fatesSinceFateDataRefresh >= 5)
+            // In Shared FATEs mode, re-open the Shared FATE window to repopulate per-zone progress,
+            // but only every 5 completed fates (opening the window is disruptive, so we don't do it
+            // every fate). EnsureData will re-capture and spam-close it on the following ticks.
+            if (C.Mode == FarmingMode.SharedFates)
             {
-                _fatesSinceFateDataRefresh = 0;
-                Features.SharedFateTracker.RefreshData(force: true);
+                _fatesSinceFateDataRefresh++;
+                if (_fatesSinceFateDataRefresh >= 5)
+                {
+                    _fatesSinceFateDataRefresh = 0;
+                    Features.SharedFateTracker.RefreshData(force: true);
+                }
             }
-        }
 
-        // Per-zone counters (manual mode quota).
-        var terr = Svc.ClientState.TerritoryType;
-        _zoneFatesDone.TryGetValue(terr, out var done);
-        _zoneFatesDone[terr] = done + 1;
+            // Per-zone counters (manual mode quota).
+            var terr = Svc.ClientState.TerritoryType;
+            _zoneFatesDone.TryGetValue(terr, out var done);
+            _zoneFatesDone[terr] = done + 1;
 
-        if (C.Mode == FarmingMode.Manual)
-        {
-            var entry = C.ManualZones.FirstOrDefault(z => z.TerritoryId == terr);
-            if (entry != null) entry.FatesDone++;
+            if (C.Mode == FarmingMode.Manual)
+            {
+                var entry = C.ManualZones.FirstOrDefault(z => z.TerritoryId == terr);
+                if (entry != null) entry.FatesDone++;
+            }
         }
 
         _targetFateId = 0;
