@@ -28,6 +28,8 @@ Collection modes (Atma/Demiatma/Luminous/Memories) track the required items in y
 
 ### Fate engine
 - Enable/disable fate types: **Battle, Boss, Defend, Escort** (Collect is WIP, see below).
+- **Collect fates** are farmed end to end: gather while nothing is hitting you, fight when the ground is empty, hand in when the bag is full. A batch goes in as soon as it is enough to finish the fate instead of waiting for the next fight, and in the last minute we deliver whatever we hold and move on rather than farming a timer that can no longer pay out.
+- **A turn-in is a committed run.** Mobs on our back are what makes a hand-in drag on (an interact needs us standing still), so we finish off whatever is nearly dead, outrun the rest along the spawn center to NPC line where fate mobs leash, then turn in clean.
 - Prioritize fates **lower on their timer** instead of closest, with a minimum-time cutoff.
 - Run fates up to **N levels above** your level (default 2).
 - **Auto level-sync** to the target fate: Sync upon arrival to fate so as not to accidentally sync with fates along the path.
