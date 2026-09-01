@@ -366,7 +366,12 @@ public sealed unsafe class FarmingController
         // them on its own (zone change, preset re-activation) — pushing them only when the rotation
         // is switched on meant the scoping could lapse for the rest of the run without a trace.
         // Self-throttled to one push every 2s.
-        if (_rotationActive) IPCManager.ApplyBmrFateTargeting(C);
+        //
+        // Held back while we're killing a stray: the hint tells BMR's AutoTarget to prefer fate
+        // mobs, which is the wrong instruction when the thing we need dead is not one. This only
+        // stops us re-asserting it — a scoping BMR already holds stays until BMR drops it — so if
+        // the rotation still pulls back to fate mobs mid-stray, that is where to look.
+        if (_rotationActive && _strayTargetId == 0) IPCManager.ApplyBmrFateTargeting(C);
 
         // Always-on maintenance that can run in parallel with farming.
         ConsumableManager.Tick(C);
@@ -1345,6 +1350,16 @@ public sealed unsafe class FarmingController
     // pull its aggro. Kept until it's on us / dies / leaves, so the move target can't oscillate.
     private ulong _massPullTargetId;
 
+    // Stray aggro taken while we're in a fate: the non-fate mob we've stopped to kill, when we give
+    // up on it, and the ones we've already given up on (so the pick can't loop straight back to a
+    // mob we just wrote off). Cleared per fate.
+    private ulong _strayTargetId;
+    private long _strayDeadlineMs;
+    private readonly HashSet<ulong> _strayWrittenOff = new();
+    // Long enough for a level-appropriate ambient mob, short enough that something we can't kill
+    // (out of reach, healing, far above our level) doesn't hold the fate hostage.
+    private const long StrayFightTimeoutMs = 30000;
+
     private void EnsureCombatEngaged(IFate fate)
     {
         var me = Player.Object;
@@ -1417,8 +1432,13 @@ public sealed unsafe class FarmingController
         // we walk to the nearest un-aggroed fate mob to body-pull it — WITHOUT changing the combat
         // target (so the rotation keeps killing one mob while we gather more). Decoupling these is
         // what lets us "pull n, aoe, repeat" without the target thrashing.
+        //
+        // NOT while we're clearing stray aggro: body-pulling would walk us away from the mob we
+        // stopped to kill and add more fate mobs on top of it, which is the opposite of getting
+        // back to the fate quickly.
+        var fightingStray = _strayTargetId != 0 && combatTarget.GameObjectId == _strayTargetId;
         var moveTarget = combatTarget;
-        if (C.MassPull)
+        if (C.MassPull && !fightingStray)
         {
             var aggroed = FateTargeting.CountAggroedFateEnemies(_targetFateId);
             if (aggroed < C.MassPullMaxPile)
@@ -1518,6 +1538,14 @@ public sealed unsafe class FarmingController
     /// </summary>
     private IBattleNpc? SelectCombatTarget(IFate fate)
     {
+        // 0) STRAY AGGRO: something that is NOT part of our fate is hitting us. Nothing else in this
+        //    method will ever pick it — every branch below is fate-scoped, and the fate-scoped BMR
+        //    AutoTarget hint keeps the rotation off it as well — so left alone it rides us for the
+        //    rest of the fate, interrupting hand-ins and chipping us down with no one answering.
+        //    Kill it first; the fate is still there afterwards.
+        var stray = SelectStrayAttacker();
+        if (stray != null) return stray;
+
         // 1) STICKY: keep the engaged target while it's valid (alive + in our fate). This is the
         //    anti-flicker rule — we do NOT yank to a closer mob just because one wandered nearer.
         if (_engagedTargetId != 0
@@ -1538,6 +1566,57 @@ public sealed unsafe class FarmingController
 
         // 3) Nearest fate enemy.
         return FateTargeting.GetNearestFateEnemy(_targetFateId);
+    }
+
+    /// <summary>
+    /// The mob to kill before we can get on with the fate: one that is attacking us (or the
+    /// chocobo) and is not part of our fate. Null when there is none.
+    ///
+    /// Sticky, so we finish the one we started on instead of flipping between two, and bounded: a
+    /// mob that will not die inside <see cref="StrayFightTimeoutMs"/> is written off and we go back
+    /// to the fate. Writing one off leaves it on us, which is exactly where we were before this
+    /// existed — one mob we cannot kill should cost us a few seconds, not the whole run.
+    /// </summary>
+    private IBattleNpc? SelectStrayAttacker()
+    {
+        var me = Player.Object;
+        if (me == null || _targetFateId == 0) return null;
+        var now = Environment.TickCount64;
+        var chocoId = FateTargeting.GetChocoboId();
+
+        // Still working on the one we picked?
+        if (_strayTargetId != 0)
+        {
+            if (now >= _strayDeadlineMs)
+            {
+                Diag("Combat", "stray", $"gave up on stray {_strayTargetId} after {StrayFightTimeoutMs / 1000}s -> back to the fate");
+                _strayWrittenOff.Add(_strayTargetId);
+                _strayTargetId = 0;
+            }
+            else if (Svc.Objects.SearchById(_strayTargetId) is IBattleNpc cur
+                     && FateTargeting.IsAttackableEnemy(cur)
+                     && !FateTargeting.IsFateEnemy(cur, _targetFateId)
+                     && FateTargeting.IsAggroedOnUs(cur, me.GameObjectId, chocoId))
+            {
+                return cur;
+            }
+            else
+            {
+                _strayTargetId = 0; // dead, despawned, leashed off, or it belongs to our fate now
+            }
+        }
+
+        // Pick a new one: nearest thing on us that our fate doesn't own and we haven't written off.
+        foreach (var e in FateTargeting.GetEnemiesAttackingMe())
+        {
+            if (FateTargeting.IsFateEnemy(e, _targetFateId)) continue;
+            if (_strayWrittenOff.Contains(e.GameObjectId)) continue;
+            _strayTargetId = e.GameObjectId;
+            _strayDeadlineMs = now + StrayFightTimeoutMs;
+            Diag("Combat", "stray", $"'{e.Name}' is on us and isn't part of the fate -> killing it first");
+            return e;
+        }
+        return null;
     }
 
     private bool BmrMovementActive() => IPCManager.BmrHandlesMovement(C);
@@ -2180,6 +2259,9 @@ public sealed unsafe class FarmingController
         _escortChasing = false;
         _engagedTargetId = 0;
         _massPullTargetId = 0;
+        _strayTargetId = 0;
+        _strayDeadlineMs = 0;
+        _strayWrittenOff.Clear();
         _collectInteractObjId = 0;
         _collectInteractCooldownMs = 0;
         _collectShedPoint = null;
