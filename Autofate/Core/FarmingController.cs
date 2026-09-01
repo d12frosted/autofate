@@ -1452,22 +1452,32 @@ public sealed unsafe class FarmingController
         // walk to it" stall).
         var dist = Vector3.Distance(me.Position, moveTarget.Position);
         var engageRange = Math.Max(2.5f, moveTarget.HitboxRadius + 2.5f);
+        // Does the mob we're walking to actually have us? This decides who drives movement below,
+        // and it is the single most useful thing in this log line when we end up standing still.
+        var targetHasUs = FateTargeting.IsAggroedOnUs(
+            moveTarget, me.GameObjectId, FateTargeting.GetChocoboId());
 
-        Diag("Combat", "move", $"target='{combatTarget.Name}' move='{moveTarget.Name}' dist={dist:F1} engageRange={engageRange:F1} outOfRange={dist > engageRange} bmrMove={BmrMovementActive()} inCombat={InCombat()} navRunning={Autofate.IPC.NavmeshIPC.IsRunning()} navPathing={Autofate.IPC.NavmeshIPC.PathfindInProgress()} meshReady={Autofate.IPC.NavmeshIPC.MeshReady()} myPos={me.Position} targetPos={moveTarget.Position}");
+        Diag("Combat", "move", $"target='{combatTarget.Name}' move='{moveTarget.Name}' dist={dist:F1} engageRange={engageRange:F1} outOfRange={dist > engageRange} targetHasUs={targetHasUs} bmrMove={BmrMovementActive()} inCombat={InCombat()} navRunning={Autofate.IPC.NavmeshIPC.IsRunning()} navPathing={Autofate.IPC.NavmeshIPC.PathfindInProgress()} meshReady={Autofate.IPC.NavmeshIPC.MeshReady()} myPos={me.Position} targetPos={moveTarget.Position}");
 
         if (dist > engageRange)
         {
             // OUT OF RANGE.
             if (BmrMovementActive())
             {
-                // CRITICAL (AOE-dodge fix): only steal movement from BMR to APPROACH while we're NOT
-                // already in combat. BMR won't chase an un-aggroed mob, so we vnav in to start the
-                // pull — but the moment we're in combat, BMR both chases the aggroed target AND
-                // dodges AOEs. If we keep yanking movement back based on distance, the instant BMR
-                // steps us out of an AOE we'd be "out of range" and vnav would drag us right back in,
-                // looping us back and forth at engage range instead of dodging. So once in combat we
-                // hand movement fully to BMR and do NOT path ourselves.
-                if (InCombat())
+                // CRITICAL (AOE-dodge fix): only steal movement from BMR to APPROACH while it has
+                // nothing to chase. BMR won't chase an un-aggroed mob, so we vnav in to start the
+                // pull — but once the mob is on us, BMR both chases it AND dodges AOEs. If we keep
+                // yanking movement back based on distance, the instant BMR steps us out of an AOE
+                // we'd be "out of range" and vnav would drag us right back in, looping us back and
+                // forth at engage range instead of dodging. So once it is on us we hand movement
+                // fully to BMR and do NOT path ourselves.
+                //
+                // The question is whether THIS mob has us, not whether we are in combat at all.
+                // The bare combat flag also fires for something else entirely — an ambient mob that
+                // aggroed us on the way in — and then we'd hand movement to BMR while the mob we
+                // want is un-aggroed and far away. BMR has nothing to chase, we've stopped
+                // navigating, and the fate runs its clock out with us standing still.
+                if (targetHasUs)
                 {
                     IPCManager.SetBmrMovement(true);  // BMR owns approach + dodge while fighting
                     Navigator.Stop();
@@ -1475,7 +1485,7 @@ public sealed unsafe class FarmingController
                 }
                 else
                 {
-                    IPCManager.SetBmrMovement(false); // not in combat yet -> vnav closes in to pull
+                    IPCManager.SetBmrMovement(false); // not on us yet -> vnav closes in to pull
                     Navigator.MoveTo(C, moveTarget.Position, engageRange, allowMount: false);
                     StatusText = $"Engaging {combatTarget.Name} (moving to {moveTarget.Name})";
                 }
