@@ -91,13 +91,26 @@ public static class FateSelector
         return 0;
     }
 
-    public readonly record struct Candidate(IFate Fate, FateType Type, float Distance, long TimeRemaining);
+    /// <summary>
+    /// A FATE the server has spawned into the table but has NOT started yet. Players cannot see it
+    /// at all — no ring, no map icon, no mobs — and its <c>TimeRemaining</c> is nonsense, because
+    /// StartTimeEpoch is still 0 and the value comes out as (duration - now), i.e. a huge negative
+    /// number. That garbage timer is the ONLY thing a preparing fate has in common with a fate we
+    /// have to start via an NPC; do not read it as one.
+    /// </summary>
+    public static bool IsPreparing(IFate fate) => fate.State == FateState.Preparing;
+
+    public readonly record struct Candidate(IFate Fate, FateType Type, float Distance, long TimeRemaining, bool Preparing);
 
     /// <summary>A fate this close (yalms) is engaged immediately, ignoring timer priority.</summary>
     private const float PickNearbyDist = 50f;
 
-    /// <summary>Returns the list of valid candidate fates in the current zone, already filtered.</summary>
-    public static List<Candidate> GetCandidates(Configuration c)
+    /// <summary>
+    /// Returns the list of valid candidate fates in the current zone, already filtered.
+    /// <paramref name="skipPreparing"/> holds fate ids we gave up waiting on: they stay out of the
+    /// running WHILE they are still preparing, and become normal candidates once they do start.
+    /// </summary>
+    public static List<Candidate> GetCandidates(Configuration c, IReadOnlySet<ushort>? skipPreparing = null)
     {
         var list = new List<Candidate>();
         var me = Player.Object;
@@ -110,8 +123,14 @@ public static class FateSelector
             if (fate == null) continue;
             if (fate.State != FateState.Running && fate.State != FateState.Preparing) continue;
 
+            var preparing = IsPreparing(fate);
+            if (preparing && skipPreparing != null && skipPreparing.Contains(fate.FateId)) continue;
+
+            // The minimum-time cutoff only means anything for a fate that is actually running: a
+            // preparing one has no timer to read yet, only the garbage value described on
+            // IsPreparing, so it must never be measured against the cutoff.
             var time = fate.TimeRemaining;
-            if (time > 0 && time < c.MinFateTimeSeconds) continue;
+            if (!preparing && time < c.MinFateTimeSeconds) continue;
 
             // Skip fates more than N levels above the player.
             if (fate.Level > myLevel + c.LevelsAbovePlayer) continue;
@@ -135,16 +154,16 @@ public static class FateSelector
             }
 
             var dist = Vector3.Distance(myPos, fate.Position);
-            list.Add(new Candidate(fate, type, dist, time));
+            list.Add(new Candidate(fate, type, dist, time, preparing));
         }
 
         return list;
     }
 
     /// <summary>Picks the best fate to run next, or null if none qualify.</summary>
-    public static Candidate? PickBest(Configuration c)
+    public static Candidate? PickBest(Configuration c, IReadOnlySet<ushort>? skipPreparing = null)
     {
-        var candidates = GetCandidates(c);
+        var candidates = GetCandidates(c, skipPreparing);
         if (candidates.Count == 0) return null;
 
         // PROXIMITY OVERRIDE: ignore the lowest-timer recommendation when a fate is right on top of
@@ -160,17 +179,16 @@ public static class FateSelector
 
         if (c.PrioritizeLowTimer)
         {
-            // Timed fates: lowest remaining time first. NPC-start fates (Collect/Escort) report a
-            // 0/unknown timer until interacted with, so instead of dumping them last we interleave
-            // them by DISTANCE against the timed fates' distances: a 0-timer fate sorts as if its
-            // remaining time equalled that of the nearest timed fate it's closer than. In practice
-            // this picks a nearby NPC-start fate over a far timed one, while still grabbing an
-            // expiring timed fate that's right next to us.
-            var timed = candidates.Where(x => x.TimeRemaining > 0).OrderBy(x => x.Distance).ToList();
+            // Running fates: lowest remaining time first. A preparing fate has no timer to sort on,
+            // so instead of dumping it last we interleave it by DISTANCE against the running fates'
+            // distances: it sorts as if its remaining time equalled that of the nearest running fate
+            // it's closer than. In practice this picks a nearby preparing fate over a far timed one,
+            // while still grabbing an expiring timed fate that's right next to us.
+            var timed = candidates.Where(x => !x.Preparing).OrderBy(x => x.Distance).ToList();
             return candidates
-                .OrderBy(x => x.TimeRemaining > 0
-                    ? x.TimeRemaining
-                    : EffectiveTimerByDistance(x, timed))
+                .OrderBy(x => x.Preparing
+                    ? EffectiveTimerByDistance(x, timed)
+                    : x.TimeRemaining)
                 .ThenBy(x => x.Distance)
                 .First();
         }
@@ -179,17 +197,17 @@ public static class FateSelector
     }
 
     /// <summary>
-    /// Effective timer for a 0/unknown-timer (NPC-start) fate so it can be interleaved among timed
-    /// fates by distance: it takes the TimeRemaining of the nearest timed fate that is FARTHER than
-    /// it, so the 0-timer fate sorts just ahead of every timed fate it's closer than. If it's farther
-    /// than all timed fates (or there are none), it sorts last (long.MaxValue).
+    /// Effective timer for a preparing (not yet started) fate so it can be interleaved among the
+    /// running fates by distance: it takes the TimeRemaining of the nearest running fate that is
+    /// FARTHER than it, so it sorts just ahead of every running fate it's closer than. If it's
+    /// farther than all of them (or there are none), it sorts last (long.MaxValue).
     /// </summary>
-    private static long EffectiveTimerByDistance(Candidate npc, System.Collections.Generic.List<Candidate> timedByDistance)
+    private static long EffectiveTimerByDistance(Candidate preparing, System.Collections.Generic.List<Candidate> timedByDistance)
     {
-        foreach (var t in timedByDistance) // nearest timed first
-            if (t.Distance > npc.Distance)
-                return t.TimeRemaining; // slot just ahead of this (farther) timed fate
-        return long.MaxValue; // farther than all timed fates -> last
+        foreach (var t in timedByDistance) // nearest running fate first
+            if (t.Distance > preparing.Distance)
+                return t.TimeRemaining; // slot just ahead of this (farther) running fate
+        return long.MaxValue; // farther than all running fates -> last
     }
 
     /// <summary>Find the fate the player is currently standing inside (within its radius), if any.</summary>

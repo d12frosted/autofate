@@ -40,7 +40,9 @@ public sealed partial class MainWindow
         foreach (var c in candidates)
         {
             var fate = c.Fate;
-            ImGui.BulletText($"{fate.Name} | {c.Type} | Lv{fate.Level} | {fate.Progress}% | {c.TimeRemaining}s | {c.Distance:0}y");
+            // A preparing fate has no timer yet, only a garbage value (see FateSelector.IsPreparing).
+            var timer = c.Preparing ? "not started" : $"{c.TimeRemaining}s";
+            ImGui.BulletText($"{fate.Name} | {c.Type} | Lv{fate.Level} | {fate.Progress}% | {timer} | {c.Distance:0}y");
         }
 
         ImGui.Separator();

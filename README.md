@@ -31,6 +31,7 @@ Collection modes (Atma/Demiatma/Luminous/Memories) track the required items in y
 - **Collect fates** are farmed end to end: gather while nothing is hitting you, fight when the ground is empty, hand in when the bag is full. A batch goes in as soon as it is enough to finish the fate instead of waiting for the next fight, and in the last minute we deliver whatever we hold and move on rather than farming a timer that can no longer pay out.
 - **A turn-in is a committed run.** Mobs on our back are what makes a hand-in drag on (an interact needs us standing still), so we finish off whatever is nearly dead, outrun the rest along the spawn center to NPC line where fate mobs leash, then turn in clean.
 - Prioritize fates **lower on their timer** instead of closest, with a minimum-time cutoff.
+- **A fate that has not started yet is waited out, not fought.** The server spawns a fate into the table before it goes live, and until then there is no ring, no map icon and nothing to kill. We hold the spawn point and say so (rather than claiming to be in a fate waiting for mobs), and if it still has not started after two minutes we walk away and leave it alone until it does.
 - Run fates up to **N levels above** your level (default 2).
 - **Auto level-sync** to the target fate: Sync upon arrival to fate so as not to accidentally sync with fates along the path.
 - **Mass-pull** toggle with a configurable enemy cap (can only adhere to this as best as reasonably possible)

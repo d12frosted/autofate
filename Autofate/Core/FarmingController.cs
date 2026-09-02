@@ -47,6 +47,14 @@ public sealed unsafe class FarmingController
     // Last state we logged a transition for (see Tick).
     private FarmState _lastLoggedState = FarmState.Idle;
 
+    // A fate can be picked while it is still PREPARING: the server has spawned it, but nothing is
+    // visible or killable yet (see FateSelector.IsPreparing). Standing on the spawn point until it
+    // goes live is the right move — it usually starts within a minute — but it can't be unbounded,
+    // so we give up past this and stop considering that fate for as long as it stays preparing.
+    private const long PreparingWaitMs = 120000;
+    private long _preparingSinceMs;
+    private readonly HashSet<ushort> _preparingGaveUp = new();
+
     // Active target fate + zone bookkeeping.
     private ushort _targetFateId;
     private uint _targetTerritory;
@@ -222,6 +230,7 @@ public sealed unsafe class FarmingController
         _zoneFatesDone.Clear();
         _dwellZone = 0;
         _lastFateSeenMs = Environment.TickCount64;
+        _preparingGaveUp.Clear();
         // Reset the shopping latch so we re-evaluate buying fresh on every Start.
         _gemCountAfterLastShop = -1;
 
@@ -813,7 +822,7 @@ public sealed unsafe class FarmingController
         }
 
         StatusText = "Selecting fate";
-        var best = FateSelector.PickBest(C);
+        var best = FateSelector.PickBest(C, _preparingGaveUp);
         if (best == null)
         {
             // No valid fate right now. FATEs respawn every few minutes, so DWELL in this zone and
@@ -859,11 +868,11 @@ public sealed unsafe class FarmingController
             // Why this fate and not the closer one: dump every candidate with its distance and
             // timer next to the pick. With PrioritizeLowTimer on, the nearest fate is NOT expected
             // to win unless it's within the proximity override.
-            var alts = string.Join(", ", FateSelector.GetCandidates(C)
+            var alts = string.Join(", ", FateSelector.GetCandidates(C, _preparingGaveUp)
                 .OrderBy(x => x.Distance)
-                .Select(x => $"'{x.Fate.Name}' {x.Distance:F0}y/{x.TimeRemaining}s"));
+                .Select(x => $"'{x.Fate.Name}' {x.Distance:F0}y/{Timer(x)}"));
             Svc.Log.Information($"[Diag/Fate] picked '{best.Value.Fate.Name}' {best.Value.Distance:F0}y/"
-                + $"{best.Value.TimeRemaining}s type={best.Value.Type} prioritizeLowTimer={C.PrioritizeLowTimer} | {alts}");
+                + $"{Timer(best.Value)} type={best.Value.Type} prioritizeLowTimer={C.PrioritizeLowTimer} | {alts}");
         }
 
         _targetFateId = best.Value.Fate.FateId;
@@ -872,6 +881,9 @@ public sealed unsafe class FarmingController
         ResetPerFateState(); // clear escort/collect carry-over from any previous fate
         State = FarmState.TravelingToFate;
     }
+
+    /// <summary>A candidate's timer for the diagnostic line: a preparing fate has none to print.</summary>
+    private static string Timer(FateSelector.Candidate c) => c.Preparing ? "not started" : $"{c.TimeRemaining}s";
 
     private void TickTravelingToFate()
     {
@@ -1197,6 +1209,31 @@ public sealed unsafe class FarmingController
             OnFateFinished();
             return;
         }
+
+        // NOT STARTED YET. The server puts a fate in the table before it goes live, and until it
+        // does there is no ring, no map icon and nothing to kill — from the player's side we are
+        // standing in an empty field. So hold the spawn point and say so, instead of running the
+        // combat path and reporting "waiting for mobs" at a fate that hasn't begun. Bounded: a fate
+        // that never starts would otherwise hold the session forever.
+        if (FateSelector.IsPreparing(fate))
+        {
+            var nowPrep = Environment.TickCount64;
+            if (_preparingSinceMs == 0) _preparingSinceMs = nowPrep;
+            var waited = (nowPrep - _preparingSinceMs) / 1000;
+
+            if (nowPrep - _preparingSinceMs >= PreparingWaitMs)
+            {
+                _preparingGaveUp.Add(_targetFateId); // don't re-pick it until it actually starts
+                AbandonFate($"fate '{fate.Name}' still hasn't started after {waited}s");
+                return;
+            }
+
+            Navigator.Stop();
+            Diag("Fate", "preparing", $"fate {_targetFateId} '{fate.Name}' still preparing ({waited}s waited)");
+            StatusText = $"Waiting for FATE to start: {fate.Name} ({waited}s)";
+            return;
+        }
+        _preparingSinceMs = 0;
 
         // GROUNDED GUARD (covers everything below: sync, NPC-start, collect, and combat). Be fully
         // off the mount and on the ground before doing ANYTHING in a fate. Only exception is when a
@@ -2255,6 +2292,7 @@ public sealed unsafe class FarmingController
     /// </summary>
     private void ResetPerFateState()
     {
+        _preparingSinceMs = 0;
         _escortNpcId = 0;
         _escortChasing = false;
         _engagedTargetId = 0;
