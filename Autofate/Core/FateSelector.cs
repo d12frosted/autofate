@@ -92,11 +92,11 @@ public static class FateSelector
     }
 
     /// <summary>
-    /// A FATE the server has spawned into the table but has NOT started yet. Players cannot see it
-    /// at all — no ring, no map icon, no mobs — and its <c>TimeRemaining</c> is nonsense, because
-    /// StartTimeEpoch is still 0 and the value comes out as (duration - now), i.e. a huge negative
-    /// number. That garbage timer is the ONLY thing a preparing fate has in common with a fate we
-    /// have to start via an NPC; do not read it as one.
+    /// A FATE that is in the table but has NOT started yet. In practice this is a fate waiting for
+    /// a player to talk to its "!" start NPC: it shows on the map and has a ring, but no mobs and
+    /// no timer until someone does, and it sits like that indefinitely. Its <c>TimeRemaining</c> is
+    /// nonsense, because StartTimeEpoch is still 0 and the value comes out as (duration - now),
+    /// i.e. a huge negative number; <c>Duration</c> is the timer it gets once started.
     /// </summary>
     public static bool IsPreparing(IFate fate) => fate.State == FateState.Preparing;
 
@@ -129,10 +129,11 @@ public static class FateSelector
             var preparing = IsPreparing(fate);
             if (preparing && skipPreparing != null && skipPreparing.Contains(fate.FateId)) continue;
 
-            // The minimum-time cutoff only means anything for a fate that is actually running: a
-            // preparing one has no timer to read yet, only the garbage value described on
-            // IsPreparing, so it must never be measured against the cutoff.
-            var time = fate.TimeRemaining;
+            // A preparing fate has no timer to read yet, only the garbage value described on
+            // IsPreparing. What it is worth to us is the full duration it gets once we start it, so
+            // that is its TimeRemaining here. The minimum-time cutoff is about a running timer, so
+            // it is only measured against fates that actually have one.
+            var time = preparing ? fate.Duration : fate.TimeRemaining;
             if (!preparing && time < c.MinFateTimeSeconds) continue;
 
             // Skip fates more than N levels above the player.
@@ -169,21 +170,12 @@ public static class FateSelector
         var candidates = GetCandidates(c, skipPreparing);
         if (candidates.Count == 0) return null;
 
-        // A PREPARING FATE IS ONLY WORTH IT IF WE ARE ALREADY THERE. It has no mobs and no ring
-        // until the server starts it (see IsPreparing), so the whole trip buys us a stand-and-wait
-        // on an empty patch of ground — while a running fate elsewhere has mobs to kill right now.
-        // So a preparing fate we are not already at drops out whenever anything else qualifies. If
-        // it is all we have, we keep it: waiting on a fate that is about to go live still beats
-        // dwelling on an empty zone (or rotating out of one that is about to have a fate in it).
-        var worthwhile = candidates.Where(x => !x.Preparing || AlreadyThere(x)).ToList();
-        if (worthwhile.Count > 0) candidates = worthwhile;
-
         // PROXIMITY OVERRIDE: ignore the lowest-timer recommendation when a fate is right on top of
         // us — a fate within PickNearbyDist yalms, OR one whose ring we're already standing inside,
         // is taken immediately (nearest first). This avoids running off to a far expiring fate when
         // there's one we could engage instantly, and makes chained replacement fates (which spawn at
         // our current spot) get picked at once. Running first: among two fates both close enough to
-        // take, the one with mobs in it now wins over one we would have to wait on.
+        // take, the one with mobs in it now wins over one we would first have to start at its NPC.
         var nearby = candidates
             .Where(AlreadyThere)
             .OrderBy(x => x.Preparing)
@@ -191,18 +183,18 @@ public static class FateSelector
             .ToList();
         if (nearby.Count > 0) return nearby[0];
 
-        // Everything nearby is gone, so a preparing fate can only still be here as the fallback
-        // above: sort them last in both orderings, behind every fate that is actually running.
+        // A preparing fate competes like any other here: it is a fate we can run start to finish,
+        // and its TimeRemaining is the full duration it gets once we start it (see GetCandidates).
         if (c.PrioritizeLowTimer)
         {
-            // Running fates: lowest remaining time first.
+            // Lowest remaining time first.
             return candidates
-                .OrderBy(x => x.Preparing ? long.MaxValue : x.TimeRemaining)
+                .OrderBy(x => x.TimeRemaining)
                 .ThenBy(x => x.Distance)
                 .First();
         }
 
-        return candidates.OrderBy(x => x.Preparing).ThenBy(x => x.Distance).First();
+        return candidates.OrderBy(x => x.Distance).First();
     }
 
     /// <summary>Find the fate the player is currently standing inside (within its radius), if any.</summary>

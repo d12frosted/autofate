@@ -47,13 +47,20 @@ public sealed unsafe class FarmingController
     // Last state we logged a transition for (see Tick).
     private FarmState _lastLoggedState = FarmState.Idle;
 
-    // A fate can be picked while it is still PREPARING: the server has spawned it, but nothing is
-    // visible or killable yet (see FateSelector.IsPreparing). Standing on the spawn point until it
-    // goes live is the right move — it usually starts within a minute — but it can't be unbounded,
-    // so we give up past this and stop considering that fate for as long as it stays preparing.
+    // A fate can be picked while it is still PREPARING: it is waiting for a player to talk to its
+    // "!" start NPC (see FateSelector.IsPreparing), so once inside the ring we find that NPC and
+    // start the fate ourselves. Only if there is no start NPC to be found do we hold the spawn
+    // point in case it goes live on its own, and not unboundedly: past this we give up and stop
+    // considering that fate for as long as it stays preparing.
     private const long PreparingWaitMs = 120000;
     private long _preparingSinceMs;
     private readonly HashSet<ushort> _preparingGaveUp = new();
+    // How many times we fired the start-NPC talk on the current preparing fate. A talk that did not
+    // take (dialogue cancelled, interact lost to a server hiccup) is retried after a short hold; a
+    // fate that still refuses to start after this many talks is given up on like one with no NPC.
+    private int _npcStartAttempts;
+    private const int NpcStartMaxAttempts = 3;
+    private const long NpcStartRetryMs = 8000;
 
     // Active target fate + zone bookkeeping.
     private ushort _targetFateId;
@@ -905,10 +912,12 @@ public sealed unsafe class FarmingController
         var type = FateSelector.Classify(fate);
         var insideRing = Vector3.Distance(me0.Position, fate.Position) <= fate.Radius;
 
-        // NPC-start fates (Escort/Defend, or a not-yet-started Collect with no enemies): travel to
-        // the START NPC. Arrival for these is "inside the ring" — TickInFate then walks the rest of
-        // the way to the NPC and drives the talk.
+        // NPC-start fates (Escort/Defend, a not-yet-started Collect with no enemies, or any fate
+        // still PREPARING, i.e. waiting for someone to talk to its "!" NPC): travel to the START
+        // NPC. Arrival for these is "inside the ring" — TickInFate then walks the rest of the way to
+        // the NPC and drives the talk.
         var startNpcNeeded = type is FateType.Escort or FateType.Defend
+            || FateSelector.IsPreparing(fate)
             || (type == FateType.Collect && FateTargeting.GetNearestFateEnemy(_targetFateId) == null);
         if (startNpcNeeded)
         {
@@ -1079,6 +1088,11 @@ public sealed unsafe class FarmingController
     private const float RingMoveFollowThreshold = 8f; // yalms of ring drift to call it an escort
     private long _dismountedForNpcMs; // when we dismounted to talk to a fate NPC (settle delay)
 
+    /// <summary>A fate dialogue (the Talk window or the start Yes/No) is up and ready for input.</summary>
+    private static bool FateDialogueOpen()
+        => ECommons.GenericHelpers.TryGetAddonByName<FFXIVClientStructs.FFXIV.Component.GUI.AtkUnitBase>("Talk", out var talk) && ECommons.GenericHelpers.IsAddonReady(talk)
+        || ECommons.GenericHelpers.TryGetAddonByName<FFXIVClientStructs.FFXIV.Component.GUI.AtkUnitBase>("SelectYesno", out var yn) && ECommons.GenericHelpers.IsAddonReady(yn);
+
     /// <summary>
     /// Some fates require talking to a start NPC (orange "!") to begin: it pops Talk dialogue then a
     /// Yes/No to start. TextAdvance (taken session-wide at Start) advances/confirms ALL of that for
@@ -1210,38 +1224,12 @@ public sealed unsafe class FarmingController
             return;
         }
 
-        // NOT STARTED YET. The server puts a fate in the table before it goes live, and until it
-        // does there is no ring, no map icon and nothing to kill — from the player's side we are
-        // standing in an empty field. So hold the spawn point and say so, instead of running the
-        // combat path and reporting "waiting for mobs" at a fate that hasn't begun. Bounded: a fate
-        // that never starts would otherwise hold the session forever.
-        if (FateSelector.IsPreparing(fate))
-        {
-            var nowPrep = Environment.TickCount64;
-            if (_preparingSinceMs == 0) _preparingSinceMs = nowPrep;
-            var waited = (nowPrep - _preparingSinceMs) / 1000;
-
-            if (nowPrep - _preparingSinceMs >= PreparingWaitMs)
-            {
-                _preparingGaveUp.Add(_targetFateId); // don't re-pick it until it actually starts
-                AbandonFate($"fate '{fate.Name}' still hasn't started after {waited}s");
-                return;
-            }
-
-            Navigator.Stop();
-            Diag("Fate", "preparing", $"fate {_targetFateId} '{fate.Name}' still preparing ({waited}s waited)");
-            StatusText = $"Waiting for FATE to start: {fate.Name} ({waited}s)";
-            return;
-        }
-        _preparingSinceMs = 0;
-
         // GROUNDED GUARD (covers everything below: sync, NPC-start, collect, and combat). Be fully
         // off the mount and on the ground before doing ANYTHING in a fate. Only exception is when a
         // dialogue addon is already up — we still click through that so we don't get stuck.
         if (Features.MountManager.IsMounted || Features.MountManager.IsFlying)
         {
-            var dlgUp = ECommons.GenericHelpers.TryGetAddonByName<FFXIVClientStructs.FFXIV.Component.GUI.AtkUnitBase>("Talk", out var td) && ECommons.GenericHelpers.IsAddonReady(td)
-                     || ECommons.GenericHelpers.TryGetAddonByName<FFXIVClientStructs.FFXIV.Component.GUI.AtkUnitBase>("SelectYesno", out var yd) && ECommons.GenericHelpers.IsAddonReady(yd);
+            var dlgUp = FateDialogueOpen();
             if (!dlgUp)
             {
                 var meM = Player.Object;
@@ -1276,6 +1264,66 @@ public sealed unsafe class FarmingController
             _inFateMountMs = 0; // DISMOUNTED in the fate => we made it. Clear the recovery sampler.
         }
 
+        // NOT STARTED YET. A preparing fate is one waiting for a player to talk to its "!" start
+        // NPC: it is on the map and has a ring, but no mobs and no timer until someone does, and it
+        // sits like that indefinitely (Pearls Apart, The Seashells He Sells, Where Has the Dagon,
+        // Coral Support all do). Waiting it out just burns two minutes and walks away from a fate
+        // we could have run in full, so find the NPC and start it ourselves. Only when there is no
+        // start NPC in sight do we hold the spawn point in case it goes live on its own, bounded.
+        if (FateSelector.IsPreparing(fate))
+        {
+            var nowPrep = Environment.TickCount64;
+            if (_preparingSinceMs == 0) _preparingSinceMs = nowPrep;
+            var waited = (nowPrep - _preparingSinceMs) / 1000;
+
+            var dlgOpen = FateDialogueOpen();
+            var talked = _startedFateId == _targetFateId;
+            // Interact fired / Yes clicked: the Talk addon takes a server roundtrip to appear and
+            // the fate flips to Running a few seconds after the Yes. Hold still meanwhile — moving
+            // cancels the pending interaction.
+            var settling = talked && (nowPrep - _fateNpcInteractedMs < NpcStartRetryMs
+                                      || nowPrep - _fateStartConfirmedMs < 5000);
+            if (dlgOpen || !settling)
+            {
+                // Talked, no dialogue, still preparing: the talk did not take. Try again, a few times.
+                if (!dlgOpen && talked)
+                {
+                    if (_npcStartAttempts >= NpcStartMaxAttempts)
+                    {
+                        _preparingGaveUp.Add(_targetFateId); // don't re-pick it until it actually starts
+                        AbandonFate($"fate '{fate.Name}' did not start after {_npcStartAttempts} talks with its start NPC");
+                        return;
+                    }
+                    Diag("NPC", "retry", $"fate {_targetFateId} '{fate.Name}' still preparing after talk #{_npcStartAttempts} -> talking again");
+                    _startedFateId = 0;
+                }
+                var interactedBefore = _fateNpcInteractedMs;
+                var handled = TryStartFateViaNpc(fate);
+                if (_fateNpcInteractedMs != interactedBefore) _npcStartAttempts++;
+                if (handled) return;
+            }
+            else
+            {
+                Navigator.Stop();
+                StatusText = $"Starting fate: {fate.Name} (waiting for dialogue)";
+                return;
+            }
+
+            // No start NPC in sight. Hold the spawn point in case the fate goes live on its own.
+            if (nowPrep - _preparingSinceMs >= PreparingWaitMs)
+            {
+                _preparingGaveUp.Add(_targetFateId); // don't re-pick it until it actually starts
+                AbandonFate($"fate '{fate.Name}' still hasn't started after {waited}s and has no start NPC");
+                return;
+            }
+
+            Navigator.Stop();
+            Diag("Fate", "preparing", $"fate {_targetFateId} '{fate.Name}' still preparing, no start NPC found ({waited}s waited)");
+            StatusText = $"Waiting for FATE to start: {fate.Name} ({waited}s)";
+            return;
+        }
+        _preparingSinceMs = 0;
+
         var type = FateSelector.Classify(fate);
         StatusText = $"In fate: {fate.Name} ({type}) {fate.Progress}%";
 
@@ -1288,8 +1336,7 @@ public sealed unsafe class FarmingController
         // COLLECT fates use the SAME "!" NPC for both starting AND turning in, so we only do the
         // start-talk on the initial join: 0 progress AND we hold none of the collectable yet. Once
         // we've started/collected, HandleCollectFate drives the turn-ins instead.
-        var dialogueOpen = ECommons.GenericHelpers.TryGetAddonByName<FFXIVClientStructs.FFXIV.Component.GUI.AtkUnitBase>("Talk", out var t) && ECommons.GenericHelpers.IsAddonReady(t)
-                        || ECommons.GenericHelpers.TryGetAddonByName<FFXIVClientStructs.FFXIV.Component.GUI.AtkUnitBase>("SelectYesno", out var y) && ECommons.GenericHelpers.IsAddonReady(y);
+        var dialogueOpen = FateDialogueOpen();
         var notStarted = fate.Progress <= 0 && FateTargeting.CountFateEnemies(_targetFateId) == 0;
         if (type == FateType.Collect)
         {
@@ -2320,6 +2367,8 @@ public sealed unsafe class FarmingController
     private void ResetPerFateState()
     {
         _preparingSinceMs = 0;
+        _npcStartAttempts = 0;
+        _fateStartConfirmedMs = 0;
         _escortNpcId = 0;
         _escortChasing = false;
         _engagedTargetId = 0;
