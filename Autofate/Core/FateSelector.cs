@@ -105,6 +105,9 @@ public static class FateSelector
     /// <summary>A fate this close (yalms) is engaged immediately, ignoring timer priority.</summary>
     private const float PickNearbyDist = 50f;
 
+    /// <summary>We are effectively at this fate already: within PickNearbyDist, or inside its ring.</summary>
+    private static bool AlreadyThere(Candidate x) => x.Distance <= PickNearbyDist || x.Distance <= x.Fate.Radius;
+
     /// <summary>
     /// Returns the list of valid candidate fates in the current zone, already filtered.
     /// <paramref name="skipPreparing"/> holds fate ids we gave up waiting on: they stay out of the
@@ -166,48 +169,40 @@ public static class FateSelector
         var candidates = GetCandidates(c, skipPreparing);
         if (candidates.Count == 0) return null;
 
+        // A PREPARING FATE IS ONLY WORTH IT IF WE ARE ALREADY THERE. It has no mobs and no ring
+        // until the server starts it (see IsPreparing), so the whole trip buys us a stand-and-wait
+        // on an empty patch of ground — while a running fate elsewhere has mobs to kill right now.
+        // So a preparing fate we are not already at drops out whenever anything else qualifies. If
+        // it is all we have, we keep it: waiting on a fate that is about to go live still beats
+        // dwelling on an empty zone (or rotating out of one that is about to have a fate in it).
+        var worthwhile = candidates.Where(x => !x.Preparing || AlreadyThere(x)).ToList();
+        if (worthwhile.Count > 0) candidates = worthwhile;
+
         // PROXIMITY OVERRIDE: ignore the lowest-timer recommendation when a fate is right on top of
         // us — a fate within PickNearbyDist yalms, OR one whose ring we're already standing inside,
         // is taken immediately (nearest first). This avoids running off to a far expiring fate when
         // there's one we could engage instantly, and makes chained replacement fates (which spawn at
-        // our current spot) get picked at once.
+        // our current spot) get picked at once. Running first: among two fates both close enough to
+        // take, the one with mobs in it now wins over one we would have to wait on.
         var nearby = candidates
-            .Where(x => x.Distance <= PickNearbyDist || x.Distance <= x.Fate.Radius)
-            .OrderBy(x => x.Distance)
+            .Where(AlreadyThere)
+            .OrderBy(x => x.Preparing)
+            .ThenBy(x => x.Distance)
             .ToList();
         if (nearby.Count > 0) return nearby[0];
 
+        // Everything nearby is gone, so a preparing fate can only still be here as the fallback
+        // above: sort them last in both orderings, behind every fate that is actually running.
         if (c.PrioritizeLowTimer)
         {
-            // Running fates: lowest remaining time first. A preparing fate has no timer to sort on,
-            // so instead of dumping it last we interleave it by DISTANCE against the running fates'
-            // distances: it sorts as if its remaining time equalled that of the nearest running fate
-            // it's closer than. In practice this picks a nearby preparing fate over a far timed one,
-            // while still grabbing an expiring timed fate that's right next to us.
-            var timed = candidates.Where(x => !x.Preparing).OrderBy(x => x.Distance).ToList();
+            // Running fates: lowest remaining time first.
             return candidates
-                .OrderBy(x => x.Preparing
-                    ? EffectiveTimerByDistance(x, timed)
-                    : x.TimeRemaining)
+                .OrderBy(x => x.Preparing ? long.MaxValue : x.TimeRemaining)
                 .ThenBy(x => x.Distance)
                 .First();
         }
 
-        return candidates.OrderBy(x => x.Distance).First();
-    }
-
-    /// <summary>
-    /// Effective timer for a preparing (not yet started) fate so it can be interleaved among the
-    /// running fates by distance: it takes the TimeRemaining of the nearest running fate that is
-    /// FARTHER than it, so it sorts just ahead of every running fate it's closer than. If it's
-    /// farther than all of them (or there are none), it sorts last (long.MaxValue).
-    /// </summary>
-    private static long EffectiveTimerByDistance(Candidate preparing, System.Collections.Generic.List<Candidate> timedByDistance)
-    {
-        foreach (var t in timedByDistance) // nearest running fate first
-            if (t.Distance > preparing.Distance)
-                return t.TimeRemaining; // slot just ahead of this (farther) running fate
-        return long.MaxValue; // farther than all running fates -> last
+        return candidates.OrderBy(x => x.Preparing).ThenBy(x => x.Distance).First();
     }
 
     /// <summary>Find the fate the player is currently standing inside (within its radius), if any.</summary>
