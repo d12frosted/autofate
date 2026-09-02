@@ -136,6 +136,33 @@ public static unsafe class FateTargeting
     }
 
     /// <summary>
+    /// The Forlorn and the Forlorn Maiden — rare spawns that turn up in a FATE around its halfway
+    /// mark. Killing one grants Twist of Fate, which raises EXP and bicolour gemstones on every
+    /// fate until we leave the zone (a large bonus from the maiden, a much larger one from the
+    /// Forlorn itself). Nothing else in a fate pays that, and it is not ours to schedule — other
+    /// players kill it and it leaves on its own — so whenever one is up it gets killed first.
+    ///
+    /// Matched by NAME. They carry the fate's FateId like any other mob in it and their nameplate
+    /// says nothing special, so the name is the only thing that separates them.
+    /// </summary>
+    private static readonly HashSet<string> ForlornNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Forlorn Maiden",
+        "The Forlorn",
+    };
+
+    /// <summary>True if this is a Forlorn / Forlorn Maiden (see <see cref="ForlornNames"/>).</summary>
+    public static bool IsForlorn(IGameObject obj) => ForlornNames.Contains(obj.Name.TextValue);
+
+    /// <summary>Nearest live Forlorn (Maiden) belonging to the fate, or null when none is up.</summary>
+    public static IBattleNpc? GetNearestForlorn(ushort fateId)
+    {
+        foreach (var e in GetFateEnemies(fateId)) // nearest-first
+            if (IsForlorn(e)) return e;
+        return null;
+    }
+
+    /// <summary>
     /// Friendly NPCs that belong to the fate and have a health bar — i.e. the protect targets in a
     /// Defend fate (and escort NPCs). These carry the FateId but are NOT the Combatant subkind.
     /// </summary>
