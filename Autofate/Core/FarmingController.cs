@@ -1472,10 +1472,12 @@ public sealed unsafe class FarmingController
         //
         // NOT while we're clearing stray aggro: body-pulling would walk us away from the mob we
         // stopped to kill and add more fate mobs on top of it, which is the opposite of getting
-        // back to the fate quickly.
-        var fightingStray = _strayTargetId != 0 && combatTarget.GameObjectId == _strayTargetId;
+        // back to the fate quickly. Same for a Forlorn: we walk straight at it and kill it, we do
+        // not go collect the rest of the fate on the way.
+        var focused = (_strayTargetId != 0 && combatTarget.GameObjectId == _strayTargetId)
+                      || FateTargeting.IsForlorn(combatTarget);
         var moveTarget = combatTarget;
-        if (C.MassPull && !fightingStray)
+        if (C.MassPull && !focused)
         {
             var aggroed = FateTargeting.CountAggroedFateEnemies(_targetFateId);
             if (aggroed < C.MassPullMaxPile)
@@ -1567,15 +1569,29 @@ public sealed unsafe class FarmingController
 
     /// <summary>
     /// Pick the fate combat target, STICKILY (mirrors the reference AutoTarget retarget rule). Order:
-    ///   1) Keep the currently engaged target if it's still a live enemy in OUR fate.
-    ///   2) Otherwise, for Defend/Escort fates, prefer the enemy attacking a protected friendly.
-    ///   3) Otherwise the nearest fate enemy.
+    ///   0) A Forlorn (Maiden) in our fate, over anything else at all.
+    ///   1) A non-fate mob that is hitting us, so it stops riding us for the rest of the fate.
+    ///   2) Keep the currently engaged target if it's still a live enemy in OUR fate.
+    ///   3) Otherwise, for Defend/Escort fates, prefer the enemy attacking a protected friendly.
+    ///   4) Otherwise the nearest fate enemy.
     /// Returns null when our fate has no live enemies. This single selector replaces the three
     /// conflicting ones the old code ran each tick.
     /// </summary>
     private IBattleNpc? SelectCombatTarget(IFate fate)
     {
-        // 0) STRAY AGGRO: something that is NOT part of our fate is hitting us. Nothing else in this
+        // 0) THE FORLORN. A Forlorn (Maiden) in our fate is worth more than the fate itself (see
+        //    FateTargeting.IsForlorn) and it does not wait for us: other players kill it and it
+        //    despawns on its own. So it outranks EVERYTHING here, the sticky target and stray aggro
+        //    included — whatever we were fighting is still there when it is down.
+        var forlorn = FateTargeting.GetNearestForlorn(_targetFateId);
+        if (forlorn != null)
+        {
+            if (_engagedTargetId != forlorn.GameObjectId)
+                Diag("Combat", "forlorn", $"'{forlorn.Name}' is up -> dropping everything to kill it");
+            return forlorn;
+        }
+
+        // 1) STRAY AGGRO: something that is NOT part of our fate is hitting us. Nothing else in this
         //    method will ever pick it — every branch below is fate-scoped, and the fate-scoped BMR
         //    AutoTarget hint keeps the rotation off it as well — so left alone it rides us for the
         //    rest of the fate, interrupting hand-ins and chipping us down with no one answering.
@@ -1583,7 +1599,7 @@ public sealed unsafe class FarmingController
         var stray = SelectStrayAttacker();
         if (stray != null) return stray;
 
-        // 1) STICKY: keep the engaged target while it's valid (alive + in our fate). This is the
+        // 2) STICKY: keep the engaged target while it's valid (alive + in our fate). This is the
         //    anti-flicker rule — we do NOT yank to a closer mob just because one wandered nearer.
         if (_engagedTargetId != 0
             && Svc.Objects.SearchById(_engagedTargetId) is IBattleNpc engaged
@@ -1592,7 +1608,7 @@ public sealed unsafe class FarmingController
             return engaged;
         }
 
-        // 2) Defend/Escort peel: the enemy actively attacking a protected friendly takes priority
+        // 3) Defend/Escort peel: the enemy actively attacking a protected friendly takes priority
         //    when we don't already have a valid target.
         var type = FateSelector.Classify(fate);
         if (type == FateType.Defend || type == FateType.Escort)
@@ -1601,7 +1617,7 @@ public sealed unsafe class FarmingController
             if (threat != null) return threat;
         }
 
-        // 3) Nearest fate enemy.
+        // 4) Nearest fate enemy.
         return FateTargeting.GetNearestFateEnemy(_targetFateId);
     }
 
@@ -1674,6 +1690,11 @@ public sealed unsafe class FarmingController
         // Nothing to do once the fate is done.
         if (fate.Progress >= 100) return CollectGoal.None;
         if (collectItemId == 0) return CollectGoal.None;
+
+        // A FORLORN OUTRANKS THE COLLECTABLES. The buff it drops pays out on every fate after this
+        // one, which is more than any single hand-in is worth, and unlike the items on the ground it
+        // will not still be there in a minute. Fight first, gather after.
+        if (FateTargeting.GetNearestForlorn(_targetFateId) != null) return CollectGoal.Fight;
 
         var moreItemsOnGround = FateTargeting.GetNearestCollectable(_targetFateId) != null;
 
@@ -1813,9 +1834,12 @@ public sealed unsafe class FarmingController
                 return;
 
             case CollectGoal.Fight:
-                // Something is attacking us — let the combat path clear it, then we resume next tick.
+                // Something is attacking us (or a Forlorn is up) — let the combat path deal with it,
+                // then we resume next tick. Leave the status alone when it is the Forlorn: the
+                // combat path already says what we are killing and why we stopped gathering.
                 EnsureCombatEngaged(fate);
-                StatusText = "Collect: clearing combat before gathering";
+                if (FateTargeting.GetNearestForlorn(_targetFateId) == null)
+                    StatusText = "Collect: clearing combat before gathering";
                 return;
 
             case CollectGoal.Pickup:
@@ -2078,7 +2102,10 @@ public sealed unsafe class FarmingController
         // Defence: pick a threat scoped to OUR fate only, then RE-ASSERT it every tick. If the
         // backend has yanked the target onto anything that is NOT one of our fate's enemies, we
         // forcibly take it back (or clear it) so the rotation can't keep hitting the foreign mob.
-        var threat = FateTargeting.GetActiveDefendThreat(_targetFateId)
+        // A Forlorn in our fate comes before the peel: it is worth more than this fate is, and it
+        // leaves on its own, while the NPC we are escorting will still need peeling afterwards.
+        var threat = FateTargeting.GetNearestForlorn(_targetFateId)
+                     ?? FateTargeting.GetActiveDefendThreat(_targetFateId)
                      ?? FateTargeting.GetNearestFateEnemy(_targetFateId);
 
         var curTarget = Svc.Targets.Target as IBattleNpc;
