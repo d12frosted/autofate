@@ -50,6 +50,7 @@ Collection modes (Atma/Demiatma/Luminous/Memories) track the required items in y
 - Lifestream for between-zone teleporting and an optional end-of-run command + chocobo leveling (see below)
 - Optional **teleport to the nearest aetheryte**: when the picked fate is far away, hop to the attuned aetheryte closest to it instead of flying the whole zone (off by default, costs gil, with distance and minimum-saving thresholds).
 - **Aggro picked up in the air is ignored.** Nothing on the ground can reach you while flying, so a mob that tags you mid-trip never costs you the flight: we stay on the mount and keep going. On foot, only something actually hitting you (or your chocobo) stops the trip.
+- **Stray aggro is a single-target fight.** While we kill the mob that stopped us, BossMod is pinned to that one target: no auto-targeting and no AOE actions, so the passive mobs standing next to it are left alone instead of being pulled in. The fate-clearing targeting comes back as soon as we move on.
 
 ### Chocobo
 - Companion stance (Defender/Attacker/Healer) with **auto-Healer when your or the chocobo's HP drops** below a user-defined threshold.

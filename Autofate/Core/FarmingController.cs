@@ -136,6 +136,7 @@ public sealed unsafe class FarmingController
     // leaving the AI on to dodge.
     private bool _rotationActive;
     private bool _aiActive;
+    private bool _bmrStrayFocused; // BMR is pinned to our target for ClearingAggro (see Tick)
 
     // Aetheryte shortcut: when the fate we picked is far away and this zone has an attuned
     // aetheryte closer to it, teleport there first instead of flying the whole way. Decided ONCE
@@ -281,6 +282,7 @@ public sealed unsafe class FarmingController
         TextAdvanceIPC.Disable();     // release any collect turn-in control
         _rotationActive = false;      // re-sync the combat latches so the next Start re-issues
         _aiActive = false;
+        _bmrStrayFocused = false;     // ShutdownAll dropped the stray-aggro pins
 
         Svc.Chat.Print($"[Autofate] Farming stopped: {reason}.");
         Svc.Log.Information($"[Autofate] Stopped: {reason}");
@@ -316,6 +318,7 @@ public sealed unsafe class FarmingController
         TextAdvanceIPC.Disable();
         _rotationActive = false;      // re-sync the latches so Resume re-issues
         _aiActive = false;
+        _bmrStrayFocused = false;     // ShutdownAll dropped the stray-aggro pins
         Svc.Chat.Print("[Autofate] Paused.");
         Svc.Log.Information($"[Autofate] Paused in state {State}");
     }
@@ -387,7 +390,26 @@ public sealed unsafe class FarmingController
         // mobs, which is the wrong instruction when the thing we need dead is not one. This only
         // stops us re-asserting it — a scoping BMR already holds stays until BMR drops it — so if
         // the rotation still pulls back to fate mobs mid-stray, that is where to look.
-        if (_rotationActive && _strayTargetId == 0) IPCManager.ApplyBmrFateTargeting(C);
+        //
+        // Clearing stray aggro between fates goes further and pins BMR to our target: the preset's
+        // Aggressive AutoTarget and AOE rotations otherwise hit the passive mobs standing next to
+        // the one that stopped us, which aggroes them and turns a quick kill into a brawl. The pin
+        // is re-pushed on a throttle (transients lapse on BMR's side) and dropped the moment we are
+        // in any other state, whichever way we left ClearingAggro.
+        if (State == FarmState.ClearingAggro)
+        {
+            IPCManager.ApplyBmrStrayFocus();
+            _bmrStrayFocused = true;
+        }
+        else
+        {
+            if (_bmrStrayFocused)
+            {
+                IPCManager.ClearBmrStrayFocus();
+                _bmrStrayFocused = false;
+            }
+            if (_rotationActive && _strayTargetId == 0) IPCManager.ApplyBmrFateTargeting(C);
+        }
 
         // Always-on maintenance that can run in parallel with farming.
         ConsumableManager.Tick(C);
@@ -2633,7 +2655,9 @@ public sealed unsafe class FarmingController
             Svc.Targets.Target = attacker;
 
         StatusText = $"Clearing stray aggro: {attacker.Name}";
-        SetCombatBackend(true); // make the rotation backend fight it
+        // Make the rotation backend fight it. BMR is pinned to this target for as long as we are in
+        // this state (top of Tick), so the rotation does not AOE or auto-target the mobs next to it.
+        SetCombatBackend(true);
 
         // Walk into range if the backend isn't moving us.
         var me = Player.Object;

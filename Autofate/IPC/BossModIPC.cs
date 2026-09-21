@@ -125,6 +125,16 @@ public static class BossModIPC
         catch (Exception e) { Svc.Log.Verbose($"[BMR] AddTransientStrategy failed: {e.Message}"); return false; }
     }
 
+    /// <summary>
+    /// Remove a transient strategy override from a preset, so the track falls back to the value
+    /// baked into the preset. False when there was nothing to remove.
+    /// </summary>
+    public static bool ClearTransientStrategy(string preset, string module, string track)
+    {
+        try { return Svc.PluginInterface.GetIpcSubscriber<string, string, string, bool>("BossMod.Presets.ClearTransientStrategy").InvokeFunc(preset, module, track); }
+        catch (Exception e) { Svc.Log.Verbose($"[BMR] ClearTransientStrategy failed: {e.Message}"); return false; }
+    }
+
     // ----------------------------------------------------- AI (movement / dodge)
     // The AI mode is driven by chat commands, which DIFFER between forks:
     //   Reborn : "/bmrai on|off",  "/bmrai forbidmovement on|off",  "/bmrai follow SlotN", ...
@@ -238,6 +248,43 @@ public static class BossModIPC
         // MaxTargets is an int track; 0 = unlimited. Clamp negatives to 0.
         ok &= AddTransientStrategy(preset, AutoTargetModule, "MaxTargets", Math.Max(0, maxTargets).ToString());
         return ok;
+    }
+
+    // ----------------------------------------------------- single-target focus (stray aggro)
+    // The preset is tuned for clearing fates: AutoTarget is Aggressive (engages any hostile in
+    // reach, aggroed on us or not), and every job module runs Targeting=Auto (picks its own best
+    // AOE target) with AOE=AOE. Killing a stray between fates needs the opposite. We want the one
+    // mob Autofate targeted dead and nothing else touched, or the AOEs pull in the passive mobs
+    // standing next to it and the "quick clear" turns into a brawl. These transients pin the
+    // rotation to the player's target for the duration; clearing them restores the preset.
+    private const string AutoTargetGeneralTrack = "General";
+    private const string JobTargetingTrack = "Targeting";
+    private const string JobAoeTrack = "AOE";
+
+    /// <summary>
+    /// Pin the preset to the player's current target: AutoTarget goes Passive, every job module
+    /// uses our target and single-target actions only. Best-effort; false if BMR rejected any of it.
+    /// </summary>
+    public static bool ApplySingleTargetFocus(string preset)
+    {
+        var ok = AddTransientStrategy(preset, AutoTargetModule, AutoTargetGeneralTrack, "Passive");
+        foreach (var m in BossModPreset.JobModules())
+        {
+            if (m.TargetingManual != null) ok &= AddTransientStrategy(preset, m.Module, JobTargetingTrack, m.TargetingManual);
+            if (m.AoeSingleTarget != null) ok &= AddTransientStrategy(preset, m.Module, JobAoeTrack, m.AoeSingleTarget);
+        }
+        return ok;
+    }
+
+    /// <summary>Drop the single-target pins so the preset's fate-clearing targeting is back.</summary>
+    public static void ClearSingleTargetFocus(string preset)
+    {
+        ClearTransientStrategy(preset, AutoTargetModule, AutoTargetGeneralTrack);
+        foreach (var m in BossModPreset.JobModules())
+        {
+            if (m.TargetingManual != null) ClearTransientStrategy(preset, m.Module, JobTargetingTrack);
+            if (m.AoeSingleTarget != null) ClearTransientStrategy(preset, m.Module, JobAoeTrack);
+        }
     }
 
     /// <summary>Forbid / allow AI actions. Reborn: "/bmrai forbidactions on|off". Vanilla:
