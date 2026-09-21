@@ -42,6 +42,27 @@ internal static class BossModPreset
         "BLM", "SMN", "RDM", "PCT",                       // casters
     };
 
+    /// <summary>WAR's module lives outside the xan namespace and has its own AOE options.</summary>
+    private const string WarModule = "BossMod.Autorotation.VeynWAR";
+
+    /// <summary>
+    /// A job rotation module in the preset and the transient values that pin it to the player's
+    /// current target: the Targeting option that follows our target (null when the module has no
+    /// such track) and the AOE option that forbids multi-target actions (null when it has none).
+    /// </summary>
+    public readonly record struct JobModule(string Module, string? TargetingManual, string? AoeSingleTarget);
+
+    /// <summary>Every job module the preset carries, with its single-target pins.</summary>
+    public static IEnumerable<JobModule> JobModules()
+    {
+        foreach (var job in StandardJobs)
+        {
+            if (job == "WAR") yield return new(WarModule, null, "SingleTarget");
+            else yield return new($"BossMod.Autorotation.xan.{job}", "Manual", "ForceST");
+        }
+        yield return new("BossMod.Autorotation.xan.BLU", "Manual", null);
+    }
+
     /// <summary>
     /// Serialized preset JSON. {0} is substituted with the preset name so a renamed preset still
     /// gets the same module set under the chosen name.
@@ -71,7 +92,7 @@ internal static class BossModPreset
             {
                 // WAR's module lives in a different namespace (BossMod.Autorotation.VeynWAR) and uses
                 // its own track names, not the shared xan tracks.
-                sb.Append("    \"BossMod.Autorotation.VeynWAR\": [\n");
+                sb.Append("    \"").Append(WarModule).Append("\": [\n");
                 sb.Append("      { \"Track\": \"AOE\", \"Option\": \"AutoFinishCombo\" },\n");
                 sb.Append("      { \"Track\": \"Burst\", \"Option\": \"Spend\" }\n");
                 sb.Append("    ],\n");

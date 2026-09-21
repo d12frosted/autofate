@@ -165,6 +165,25 @@ public static class IPCManager
         BossModIPC.ApplyFateTargeting(BossModPreset.Name, maxTargets);
     }
 
+    /// <summary>
+    /// Pin BMR to the player's current target while we clear stray aggro: AutoTarget goes Passive
+    /// and every job module is told to hit our target with single-target actions only. Re-pushed
+    /// on a throttle because these are transient strategies BMR drops on its own.
+    /// </summary>
+    public static void ApplyBmrStrayFocus()
+    {
+        if (!BossModIPC.IsInstalled) return;
+        if (!ECommons.Throttlers.EzThrottler.Throttle("AF_BmrStrayFocus", 2000)) return;
+        BossModIPC.ApplySingleTargetFocus(BossModPreset.Name);
+    }
+
+    /// <summary>Drop the stray-aggro pins so the preset's fate-clearing targeting is back.</summary>
+    public static void ClearBmrStrayFocus()
+    {
+        if (!BossModIPC.IsInstalled) return;
+        BossModIPC.ClearSingleTargetFocus(BossModPreset.Name);
+    }
+
     public static void StopCombat(Configuration c)
     {
         StopRotation(c);
@@ -192,6 +211,7 @@ public static class IPCManager
         if (BossModIPC.IsInstalled)
         {
             BossModIPC.ClearActivePreset();
+            BossModIPC.ClearSingleTargetFocus(BossModPreset.Name); // undo the stray-aggro pins
             BossModIPC.AiEnable(false);
             BossModIPC.ResetAiEnableCache();      // so next run re-issues "/bmrai on"
             BossModIPC.AiForbidMovement(false);   // undo mass-pull movement takeover
