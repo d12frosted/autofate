@@ -113,7 +113,9 @@ public static class FateSelector
     /// <paramref name="skipPreparing"/> holds fate ids we gave up waiting on: they stay out of the
     /// running WHILE they are still preparing, and become normal candidates once they do start.
     /// </summary>
-    public static List<Candidate> GetCandidates(Configuration c, IReadOnlySet<ushort>? skipPreparing = null)
+    /// <paramref name="skip"/> holds fate ids to leave out whatever their state (e.g. ones we couldn't reach).
+    public static List<Candidate> GetCandidates(Configuration c, IReadOnlySet<ushort>? skipPreparing = null,
+                                                IReadOnlySet<ushort>? skip = null)
     {
         var list = new List<Candidate>();
         var me = Player.Object;
@@ -128,6 +130,7 @@ public static class FateSelector
 
             var preparing = IsPreparing(fate);
             if (preparing && skipPreparing != null && skipPreparing.Contains(fate.FateId)) continue;
+            if (skip != null && skip.Contains(fate.FateId)) continue;
 
             // A preparing fate has no timer to read yet, only the garbage value described on
             // IsPreparing. What it is worth to us is the full duration it gets once we start it, so
@@ -165,9 +168,10 @@ public static class FateSelector
     }
 
     /// <summary>Picks the best fate to run next, or null if none qualify.</summary>
-    public static Candidate? PickBest(Configuration c, IReadOnlySet<ushort>? skipPreparing = null)
+    public static Candidate? PickBest(Configuration c, IReadOnlySet<ushort>? skipPreparing = null,
+                                      IReadOnlySet<ushort>? skip = null)
     {
-        var candidates = GetCandidates(c, skipPreparing);
+        var candidates = GetCandidates(c, skipPreparing, skip);
         if (candidates.Count == 0) return null;
 
         // PROXIMITY OVERRIDE: ignore the lowest-timer recommendation when a fate is right on top of
