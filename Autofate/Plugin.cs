@@ -27,6 +27,7 @@ public sealed class Plugin : IDalamudPlugin
         ECommonsMain.Init(pi, this, Module.DalamudReflector);
         MigrateLegacyConfig(pi); // one-time copy of pre-rename "AutoFates" settings
         C = EzConfig.Init<Configuration>();
+        MigrateConfig(C);
 
         IPC.IPCManager.Init();
         Controller = new Core.FarmingController();
@@ -107,6 +108,19 @@ public sealed class Plugin : IDalamudPlugin
     // The plugin was renamed AutoFates -> Autofate. Dalamud keys config by InternalName, so old
     // settings live in the sibling "AutoFates" config dir. Copy them once into our new dir if it's
     // empty, so existing users keep their setup.
+    /// <summary>Bring an older config schema up to date (see <see cref="Configuration.Version"/>).</summary>
+    private static void MigrateConfig(Configuration c)
+    {
+        if (c.Version >= 2) return;
+        // v2: the mass-pull toggle became PullStyle. Everyone had mass pull on by default, so "on"
+        // says nothing about a choice and maps to Auto (Yolo on a tank, Safe otherwise); "off" was a
+        // deliberate choice for one-at-a-time and maps to Safe.
+        c.PullStyle = c.MassPull ? Logic.PullStyle.Auto : Logic.PullStyle.Safe;
+        c.Version = 2;
+        c.Save();
+        Svc.Log.Information($"[Autofate] Migrated config to v2 (pull style {c.PullStyle}).");
+    }
+
     private static void MigrateLegacyConfig(IDalamudPluginInterface pi)
     {
         try

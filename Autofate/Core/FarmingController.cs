@@ -1591,7 +1591,7 @@ public sealed unsafe class FarmingController
         var focused = (_strayTargetId != 0 && combatTarget.GameObjectId == _strayTargetId)
                       || FateTargeting.IsForlorn(combatTarget);
         var moveTarget = combatTarget;
-        if (C.MassPull && !focused)
+        if (FateTargeting.EffectivePullStyle(C) == Logic.PullStyle.Yolo && !focused)
         {
             // One snapshot of the fate's mobs: who is on us decides both the pile size and, via
             // MassPull.PickNext, which mob (if any) we walk to next.
@@ -1729,8 +1729,21 @@ public sealed unsafe class FarmingController
         var stray = SelectStrayAttacker();
         if (stray != null) return stray;
 
+        var safe = FateTargeting.EffectivePullStyle(C) == Logic.PullStyle.Safe;
+
         // 2) STICKY: keep the engaged target while it's valid (alive + in our fate). This is the
         //    anti-flicker rule — we do NOT yank to a closer mob just because one wandered nearer.
+        //    Safe style makes one exception: if a fate mob is hitting us while we're still walking
+        //    to a target that isn't, that mob comes first. Walking on would drag it into the next
+        //    fight, which is exactly the pile Safe exists to avoid.
+        if (safe && NearestFateMobOnUs() is { } onUs
+            && !(Svc.Objects.SearchById(_engagedTargetId) is IBattleNpc cur && IsOnUs(cur)))
+        {
+            if (_engagedTargetId != onUs.GameObjectId)
+                Diag("Combat", "safe", $"'{onUs.Name}' is on us -> fighting it before anything new");
+            return onUs;
+        }
+
         if (_engagedTargetId != 0
             && Svc.Objects.SearchById(_engagedTargetId) is IBattleNpc engaged
             && FateTargeting.IsFateEnemy(engaged, _targetFateId))
@@ -1747,8 +1760,40 @@ public sealed unsafe class FarmingController
             if (threat != null) return threat;
         }
 
-        // 4) Nearest fate enemy.
+        // 4) Safe: the fate mob with the fewest idle hostiles around it (they'd join in), weighed
+        //    against distance. Yolo: simply the nearest, mass pull gathers the rest.
+        if (safe) return SelectSafeTarget();
         return FateTargeting.GetNearestFateEnemy(_targetFateId);
+    }
+
+    /// <summary>Is this mob targeting us or our chocobo?</summary>
+    private static bool IsOnUs(IBattleNpc mob)
+        => Player.Object is { } me && FateTargeting.IsAggroedOnUs(mob, me.GameObjectId, FateTargeting.GetChocoboId());
+
+    /// <summary>Nearest mob of our fate that is targeting us or our chocobo, or null.</summary>
+    private IBattleNpc? NearestFateMobOnUs()
+        => FateTargeting.GetFateEnemies(_targetFateId).FirstOrDefault(IsOnUs); // nearest-first
+
+    /// <summary>
+    /// Safe pull style: the next fate mob to engage when nothing of the fate's is on us, picked by
+    /// <see cref="Logic.SafePull.PickTarget"/> (nearest, penalised for idle hostiles around it).
+    /// </summary>
+    private IBattleNpc? SelectSafeTarget()
+    {
+        var me = Player.Object;
+        if (me == null) return null;
+        var fateMobs = FateTargeting.GetFateEnemies(_targetFateId);
+        if (fateMobs.Count == 0) return null;
+        var candidates = fateMobs.Select(e => new Logic.SafePull.Mob(e.GameObjectId, e.Position)).ToList();
+        // Only hostiles near some candidate can matter; the furthest candidate plus the crowd radius bounds it.
+        var reach = fateMobs.Max(e => Vector3.Distance(me.Position, e.Position)) + Logic.SafePull.CrowdRadius;
+        var idle = FateTargeting.GetIdleHostiles(reach)
+            .Select(e => new Logic.SafePull.Mob(e.GameObjectId, e.Position)).ToList();
+        var pickId = Logic.SafePull.PickTarget(me.Position, candidates, idle);
+        var pick = fateMobs.FirstOrDefault(e => e.GameObjectId == pickId);
+        if (pick != null && pick.GameObjectId != _engagedTargetId)
+            Diag("Combat", "safe", $"next: '{pick.Name}' ({Vector3.Distance(me.Position, pick.Position):F0}y, {idle.Count} idle hostiles around the fate)");
+        return pick;
     }
 
     /// <summary>
