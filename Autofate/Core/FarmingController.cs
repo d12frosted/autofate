@@ -1559,26 +1559,27 @@ public sealed unsafe class FarmingController
         var moveTarget = combatTarget;
         if (C.MassPull && !focused)
         {
-            var aggroed = FateTargeting.CountAggroedFateEnemies(_targetFateId);
+            // One snapshot of the fate's mobs: who is on us decides both the pile size and, via
+            // MassPull.PickNext, which mob (if any) we walk to next.
+            var myId = me.GameObjectId;
+            var chocoId = FateTargeting.GetChocoboId();
+            var fateMobs = FateTargeting.GetFateEnemies(_targetFateId);
+            var snapshot = fateMobs
+                .Select(e => new Logic.MassPull.Enemy(e.GameObjectId, e.Position, FateTargeting.IsAggroedOnUs(e, myId, chocoId)))
+                .ToList();
+            var aggroed = snapshot.Count(e => e.OnUs);
             if (aggroed < C.MassPullMaxPile)
             {
                 // STICKY pull target: keep walking to the SAME un-aggroed mob until it's actually on
                 // us (or dies/leaves), then pick the next. Re-picking nearest every tick would thrash
                 // when two candidates are similar distance. Sticky here mirrors the sticky combat
-                // target and is the other half of the anti-oscillation fix.
-                IBattleNpc? pull = null;
-                if (_massPullTargetId != 0
-                    && Svc.Objects.SearchById(_massPullTargetId) is IBattleNpc cand
-                    && FateTargeting.IsFateEnemy(cand, _targetFateId)
-                    && !FateTargeting.IsAggroedOnUs(cand, me.GameObjectId, FateTargeting.GetChocoboId()))
-                {
-                    pull = cand; // still valid + not yet pulled -> keep going for it
-                }
-                else
-                {
-                    pull = FateTargeting.GetNearestUnaggroedFateEnemy(_targetFateId);
-                    _massPullTargetId = pull?.GameObjectId ?? 0;
-                }
+                // target and is the other half of the anti-oscillation fix. PickNext also keeps us
+                // near the pile we already have (see MassPullRadius).
+                var pickId = Logic.MassPull.PickNext(me.Position, snapshot, C.MassPullRadius, _massPullTargetId);
+                if (pickId != _massPullTargetId)
+                    Diag("Combat", "pull", $"body-pull target -> {pickId?.ToString() ?? "none"} (pile={aggroed}/{C.MassPullMaxPile} radius={C.MassPullRadius:F0})");
+                _massPullTargetId = pickId ?? 0;
+                var pull = pickId is { } id ? fateMobs.FirstOrDefault(e => e.GameObjectId == id) : null;
                 if (pull != null) moveTarget = pull;
             }
             else _massPullTargetId = 0; // pile full -> stop body-pulling

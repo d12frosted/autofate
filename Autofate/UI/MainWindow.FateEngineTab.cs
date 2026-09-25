@@ -70,6 +70,13 @@ public sealed partial class MainWindow
             {
                 C.MassPullMaxPile = maxPile; Save();
             }
+            var pullRadius = C.MassPullRadius;
+            if (ImGui.SliderFloat("Pull radius (yalms)", ref pullRadius, 5f, 50f, "%.0f"))
+            {
+                C.MassPullRadius = pullRadius; Save();
+            }
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Once something is on you, only pull mobs this close. Further ones wait until the pile is dead.");
             ImGui.Unindent();
         }
 

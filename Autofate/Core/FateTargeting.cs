@@ -227,43 +227,6 @@ public static unsafe class FateTargeting
     }
 
     /// <summary>
-    /// Count fate enemies currently aggroed onto us/our chocobo (the real "pile" size for mass
-    /// pulling, AutoDuty-style). No range limit — counts every aggroed fate enemy.
-    /// </summary>
-    public static int CountAggroedFateEnemies(ushort fateId)
-    {
-        var me = Player.Object;
-        if (me == null) return 0;
-        var myId = me.GameObjectId;
-        var chocoId = GetChocoboId();
-        var n = 0;
-        foreach (var e in GetFateEnemies(fateId))
-        {
-            if (IsAggroedOnUs(e, myId, chocoId)) n++;
-        }
-        return n;
-    }
-
-    /// <summary>
-    /// Mass-pull picker (AutoDuty KillInRange style): the nearest fate enemy that is NOT yet aggroed
-    /// onto us. We path to it to body-pull its aggro, then move to the next. No range limit —
-    /// returns null only when every fate enemy is already on us. Nearest-first.
-    /// </summary>
-    public static IBattleNpc? GetNearestUnaggroedFateEnemy(ushort fateId)
-    {
-        var me = Player.Object;
-        if (me == null) return null;
-        var myId = me.GameObjectId;
-        var chocoId = GetChocoboId();
-        foreach (var e in GetFateEnemies(fateId)) // nearest-first
-        {
-            if (IsAggroedOnUs(e, myId, chocoId)) continue; // already pulled
-            return e;
-        }
-        return null;
-    }
-
-    /// <summary>
     /// Ground collectables for a collect fate (e.g. "Fallen Lumber"): interactable EventObj objects
     /// carrying this FateId. Nearest-first.
     /// </summary>
