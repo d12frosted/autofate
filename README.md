@@ -36,6 +36,7 @@ Collection modes (Atma/Demiatma/Luminous/Memories) track the required items in y
 - Run fates up to **N levels above** your level (default 2).
 - **Auto level-sync** to the target fate: Sync upon arrival to fate so as not to accidentally sync with fates along the path.
 - **Mass-pull** toggle with a configurable enemy cap (can only adhere to this as best as reasonably possible)
+- **Mass-pull stays local.** With nothing on us we walk to the nearest mob, however far. Once something is on us, only mobs within the pull radius (20y by default) get pulled; the rest wait until the pile is dead. Walking further would drag the pile along until it drops aggro, and then we'd walk back for it.
 - **FATE blacklist**: never navigate to named fates.
 - **Follow party leader**: skip our own pathing and just run whatever fate the leader drops us
   in (great for multiboxing & farming with friends).
@@ -125,6 +126,18 @@ dotnet build Autofate/Autofate.csproj -c Release
 Output: `Autofate/bin/x64/Release/Autofate.dll`. The build references your local Dalamud dev
 libraries at `~/.xlcore/dalamud/Hooks/dev/` (override with `-p:DalamudLibPath=...`). Targets
 `net10.0-windows`, Dalamud API level 15.
+
+### Tests
+
+Decision logic that doesn't need the game (which mob to pull next, and so on) lives in
+`Autofate/Logic` and is unit tested by `Autofate.Tests`, which compiles those files directly
+instead of referencing the plugin, so it runs anywhere without Dalamud:
+
+```bash
+dotnet test Autofate.Tests
+```
+
+Code in `Autofate/Logic` must only depend on the BCL.
 
 ### Installing a local build (XIV on Mac)
 

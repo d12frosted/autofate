@@ -76,6 +76,11 @@ public sealed class Configuration
     public bool MassPull = true;
     /// <summary>Max number of enemies to hold aggro on at once during mass pull.</summary>
     public int MassPullMaxPile = 2;
+    /// <summary>
+    /// Once something is on us, only body-pull mobs within this many yalms. Walking further drags
+    /// the pile along until it drops aggro, and then we walk back for it.
+    /// </summary>
+    public float MassPullRadius = 20f;
     /// <summary>Self AOE dodging when not using BMR for movement.</summary>
 
     /// <summary>FATE names we will never navigate to, regardless of mode / enabled fate types.</summary>
