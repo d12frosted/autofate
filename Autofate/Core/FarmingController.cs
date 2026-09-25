@@ -856,7 +856,7 @@ public sealed unsafe class FarmingController
         }
 
         StatusText = "Selecting fate";
-        var best = FateSelector.PickBest(C, _preparingGaveUp);
+        var best = FateSelector.PickBest(C, _preparingGaveUp, UnreachableFates());
         if (best == null)
         {
             // No valid fate right now. FATEs respawn every few minutes, so DWELL in this zone and
@@ -907,7 +907,7 @@ public sealed unsafe class FarmingController
             // Why this fate and not the closer one: dump every candidate with its distance and
             // timer next to the pick. With PrioritizeLowTimer on, the nearest fate is NOT expected
             // to win unless it's within the proximity override.
-            var alts = string.Join(", ", FateSelector.GetCandidates(C, _preparingGaveUp)
+            var alts = string.Join(", ", FateSelector.GetCandidates(C, _preparingGaveUp, UnreachableFates())
                 .OrderBy(x => x.Distance)
                 .Select(x => $"'{x.Fate.Name}' {x.Distance:F0}y/{Timer(x)}"));
             Svc.Log.Information($"[Diag/Fate] picked '{best.Value.Fate.Name}' {best.Value.Distance:F0}y/"
@@ -958,6 +958,12 @@ public sealed unsafe class FarmingController
             if (insideRing) { ArriveAtFate(fate); return; }
             var npc = FateTargeting.FindFateStartNpc(_targetFateId, fate.Radius);
             var dest = npc?.Position ?? fate.Position;
+            // No other spot to try here: if we can't get any closer to the NPC, give up on the fate.
+            if (_travelProgress.Update(Environment.TickCount64, Vector3.Distance(me0.Position, dest), WaitingOnNav()))
+            {
+                GiveUpUnreachable(fate, "can't get any closer to its start NPC");
+                return;
+            }
             StatusText = $"Traveling to fate NPC: {fate.Name}";
             Navigator.MoveTo(C, dest, 3.5f, allowMount: true);
             return;
@@ -1035,7 +1041,53 @@ public sealed unsafe class FarmingController
         // On foot (or before we've mounted) the dropoff itself is the target.
         var flyingLeg = Features.MountManager.IsMounted && Features.MountManager.ShouldFly(C);
         var flyTo = flyingLeg ? Logic.FateLanding.FlightTarget(_fateDropoff.Value, _climbingOut) : _fateDropoff.Value;
+
+        // NOT GETTING ANY CLOSER. Moving but never closing in means vnav can't route to this spot
+        // (it reports "volume search stopped short of the goal" and every retry fails the same way).
+        // Try another spot in the fate; after a few, the fate itself is out of reach for now.
+        if (_travelProgress.Update(nowMs, Vector3.Distance(me0.Position, flyTo), WaitingOnNav()))
+        {
+            if (++_dropoffRerolls >= MaxDropoffRerolls)
+            {
+                GiveUpUnreachable(fate, $"no progress towards {_dropoffRerolls} different spots in it");
+                return;
+            }
+            Navigator.Stop();
+            _fateDropoff = RandomPointInFate(fate);
+            _climbingOut = false;
+            _travelProgress.Reset();
+            Diag("Movement", "noprogress", $"not getting closer to the dropoff -> trying another spot {_fateDropoff} ({_dropoffRerolls}/{MaxDropoffRerolls})");
+            return;
+        }
         Navigator.MoveTo(C, flyTo, Logic.FateLanding.ArriveRadius, allowMount: true);
+    }
+
+    // Travel watchdog: see Logic.TravelProgress. 20s of our own time (pathfind waits excluded)
+    // without closing in by 10y is a trip that isn't going to arrive.
+    private readonly Logic.TravelProgress _travelProgress = new(stallMs: 20000, minGain: 10f);
+    private int _dropoffRerolls;
+    private const int MaxDropoffRerolls = 3;
+    // Fates we couldn't reach, and until when we leave them alone. Bounded rather than forever:
+    // a later spawn of the same fate may well start somewhere we can get to.
+    private readonly Dictionary<ushort, long> _unreachableUntil = new();
+    private const long UnreachableSkipMs = 10 * 60 * 1000;
+
+    private static bool WaitingOnNav() => NavmeshIPC.PathfindInProgress() || ECommons.GenericHelpers.IsOccupied();
+
+    /// <summary>Fates currently on the unreachable list (expired entries dropped).</summary>
+    private IReadOnlySet<ushort> UnreachableFates()
+    {
+        var now = Environment.TickCount64;
+        foreach (var id in _unreachableUntil.Where(kv => kv.Value <= now).Select(kv => kv.Key).ToList())
+            _unreachableUntil.Remove(id);
+        return _unreachableUntil.Keys.ToHashSet();
+    }
+
+    private void GiveUpUnreachable(IFate fate, string why)
+    {
+        _unreachableUntil[_targetFateId] = Environment.TickCount64 + UnreachableSkipMs;
+        Navigator.Stop();
+        AbandonFate($"'{fate.Name}' looks unreachable ({why}); skipping it for {UnreachableSkipMs / 60000} min");
     }
 
     /// <summary>
@@ -2685,6 +2737,8 @@ public sealed unsafe class FarmingController
         _ringMovedFollow = false;
         _fateDropoff = null;
         _climbingOut = false;
+        _travelProgress.Reset();
+        _dropoffRerolls = 0;
         _dismountSinceMs = 0;
         _landOnDropoff = false;
         _fateStuckLastSampleMs = 0;
