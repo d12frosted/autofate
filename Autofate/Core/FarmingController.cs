@@ -1605,7 +1605,22 @@ public sealed unsafe class FarmingController
                 // aggroed us on the way in — and then we'd hand movement to BMR while the mob we
                 // want is un-aggroed and far away. BMR has nothing to chase, we've stopped
                 // navigating, and the fate runs its clock out with us standing still.
-                if (targetHasUs)
+                //
+                // BMR does NOT close back in after a dodge, though: nothing in our preset makes it
+                // follow the target, so it steps us out of the AOE and leaves us there, and a melee
+                // job then spams its ranged GCD from 15y away. When BMR reports its danger state
+                // (Reborn), the yield latch above already holds us still while an AOE is up, so
+                // getting here means the ground is clear and we walk back in ourselves. BMR keeps
+                // movement allowed meanwhile: the moment it wants to dodge again it reports that it
+                // is navigating and the latch stops us. Vanilla BossMod reports no danger, so there
+                // we cannot tell a dodge from a gap and still leave it all to BossMod.
+                if (targetHasUs && IPCManager.BmrReportsDanger)
+                {
+                    IPCManager.SetBmrMovement(true);
+                    Navigator.MoveTo(C, moveTarget.Position, engageRange, allowMount: false);
+                    StatusText = $"Fighting {combatTarget.Name} (closing in)";
+                }
+                else if (targetHasUs)
                 {
                     IPCManager.SetBmrMovement(true);  // BMR owns approach + dodge while fighting
                     Navigator.Stop();

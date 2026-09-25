@@ -259,4 +259,12 @@ public static class IPCManager
     /// <summary>True while any BMR danger is present (active forbidden zone or AI navigating).</summary>
     public static bool DangerPresent()
         => BossModIPC.IsInstalled && BossModIPC.DangerPresent();
+
+    /// <summary>
+    /// True when the installed BossMod reports its danger state (forbidden zones, AI navigating).
+    /// Only Reborn does; on vanilla <see cref="DangerPresent"/> is always false, so "no danger" there
+    /// means "unknown", not "safe".
+    /// </summary>
+    public static bool BmrReportsDanger
+        => BossModIPC.InstalledVariant == BossModIPC.Variant.Reborn;
 }
