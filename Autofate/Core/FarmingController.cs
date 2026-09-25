@@ -144,7 +144,7 @@ public sealed unsafe class FarmingController
     // so we don't burn 5s on it every fate.
     private ushort _hopEvaluatedFateId;
     private uint _hopAetheryteId;
-    private System.Numerics.Vector3 _hopDestination;
+    private System.Numerics.Vector2 _hopDestination; // world X/Z of the aetheryte we're teleporting to
     private long _hopIssuedMs;
     private long _hopLastBusyMs;
     private readonly HashSet<uint> _hopFailedAetherytes = new();
@@ -2341,33 +2341,42 @@ public sealed unsafe class FarmingController
         // Teleport can't be cast while fighting, while the client is busy, or in the air — none of
         // those are a "no" for this fate though, so DON'T latch: re-check once we're free again.
         if (InCombat() || ECommons.GenericHelpers.IsOccupied() || Teleporter.IsBusy()) return false;
-        if (Features.MountManager.IsFlying) return false;
+        if (Features.MountManager.IsFlying)
+        {
+            Diag("Movement", "hopdecision", $"'{fate.Name}': already airborne, not considering a teleport");
+            return false;
+        }
 
         _hopEvaluatedFateId = _targetFateId; // from here on it's fly-there unless we hop right now
 
-        var distToFate = Vector3.Distance(me.Position, fate.Position);
-        if (distToFate < C.AetheryteHopMinDistance) return false;
-
-        var target = Teleporter.FindNearestAetheryte(Svc.ClientState.TerritoryType, fate.Position,
-            id => !_hopFailedAetherytes.Contains(id));
-        if (target == null) return false;
-
-        var saved = distToFate - Vector3.Distance(target.Value.Position, fate.Position);
-        if (saved < C.AetheryteHopMinSaving) return false;
-        // Already standing at it: teleporting would only cost gil and a cast.
-        if (Vector3.Distance(me.Position, target.Value.Position) <= HopArrivalDistance) return false;
+        var zone = Teleporter.AetherytesInTerritory(Svc.ClientState.TerritoryType);
+        var usable = zone
+            .Where(a => !_hopFailedAetherytes.Contains(a.RowId) && Teleporter.IsAttuned(a.RowId))
+            .Select(a => new Logic.AetheryteHop.Aetheryte(a.RowId, a.Position))
+            .ToList();
+        var decision = Logic.AetheryteHop.Decide(Flat(me.Position), Flat(fate.Position), usable,
+            new(C.AetheryteHopMinDistance, C.AetheryteHopMinSaving, HopArrivalDistance));
+        var target = zone.FirstOrDefault(a => a.RowId == decision.AetheryteId);
+        // Once per fate, so this is cheap, and it's the only way to tell WHY we flew.
+        Diag("Movement", "hopdecision", $"'{fate.Name}': {decision.Verdict} (fate {decision.Distance:F0}y away, "
+            + $"best={(decision.AetheryteId != 0 ? target.Name : "none")} saves {decision.Saved:F0}y, "
+            + $"aetherytes: {zone.Count} in zone, {usable.Count} usable)");
+        if (decision.Verdict != Logic.AetheryteHop.Verdict.Hop) return false;
 
         Navigator.Stop(); // moving cancels the cast
-        if (!Teleporter.TeleportToAetheryteId(target.Value.RowId)) return false;
+        if (!Teleporter.TeleportToAetheryteId(target.RowId)) return false;
 
-        _hopAetheryteId = target.Value.RowId;
-        _hopDestination = target.Value.Position;
+        _hopAetheryteId = target.RowId;
+        _hopDestination = target.Position;
         _hopIssuedMs = Environment.TickCount64;
         _hopLastBusyMs = 0;
-        Diag("Movement", "hop", $"teleporting to {target.Value.Name} for '{fate.Name}' (saves ~{saved:F0}y of {distToFate:F0}y)");
-        StatusText = $"Teleporting to {target.Value.Name}";
+        Diag("Movement", "hop", $"teleporting to {target.Name} for '{fate.Name}' (saves ~{decision.Saved:F0}y of {decision.Distance:F0}y)");
+        StatusText = $"Teleporting to {target.Name}";
         return true;
     }
+
+    /// <summary>World X/Z of a position, the plane aetheryte positions live in.</summary>
+    private static Vector2 Flat(Vector3 p) => new(p.X, p.Z);
 
     /// <summary>Wait out an issued hop. Returns true while it's still in flight.</summary>
     private bool TickAetheryteHopInFlight()
@@ -2390,7 +2399,7 @@ public sealed unsafe class FarmingController
             return true;
         }
 
-        if (Vector3.Distance(me.Position, _hopDestination) <= HopArrivalDistance)
+        if (Vector2.Distance(Flat(me.Position), _hopDestination) <= HopArrivalDistance)
         {
             _hopIssuedMs = 0; // landed — resume normal travel from here
             return false;
