@@ -1605,6 +1605,13 @@ public sealed unsafe class FarmingController
         if (Svc.Targets.Target is not IBattleNpc cur || cur.GameObjectId != combatTarget.GameObjectId)
             Svc.Targets.Target = combatTarget;
 
+        // ---- SAFE: KITE IT OUT OF ITS PACK -----------------------------------------------------
+        // Not for stray aggro or a Forlorn: those we walk straight at and kill.
+        var kiteable = combatTarget.GameObjectId != _strayTargetId && !FateTargeting.IsForlorn(combatTarget);
+        if (kiteable && FateTargeting.EffectivePullStyle(C) == Logic.PullStyle.Safe && TickKite(me, combatTarget))
+            return;
+        if (_kiteTargetId != 0 && _kiteTargetId != combatTarget.GameObjectId) ClearKite();
+
         // ---- MOVE TARGET (may differ from combat target for mass-pull body-pulling) ------------
         // The thing we WALK to. Normally the combat target. For mass pull, while under the pile cap,
         // we walk to the nearest un-aggroed fate mob to body-pull it — WITHOUT changing the combat
@@ -1791,6 +1798,125 @@ public sealed unsafe class FarmingController
         //    against distance. Yolo: simply the nearest, mass pull gathers the rest.
         if (safe) return SelectSafeTarget();
         return FateTargeting.GetNearestFateEnemy(_targetFateId);
+    }
+
+    // ---------------------------------------------------------------- safe: kiting
+    // Safe style, target standing near other idle mobs: walking up to it would pull them too. So we
+    // stand Kite.PullRange away from it, clear of its neighbours, pull it with a ranged attack (our
+    // normal attack for ranged jobs and healers), and melee jobs back off a little further so it
+    // comes to us away from the pack. A lone mob is just walked up to, as before.
+    private ulong _kiteTargetId;
+    private Vector3 _kiteSpot, _kiteRetreat;
+    private long _kiteStartMs, _kiteAtSpotMs, _kiteWaitMs;
+    private readonly HashSet<ulong> _kiteGaveUp = new(); // mobs we couldn't kite this fate: walk in
+    // Getting to the spot and pulling shouldn't take longer than this; past it we walk in instead.
+    private const long KiteTimeoutMs = 30000;
+    // Standing at the spot without the pull landing (no line of sight, action unusable...).
+    private const long KitePullTimeoutMs = 6000;
+    private const float KiteSpotReach = 2f;
+    // Melee jobs waiting at the retreat spot for the pulled mob to arrive.
+    private const long KiteWaitMs = 5000;
+
+    private void ClearKite()
+    {
+        _kiteTargetId = 0;
+        _kiteStartMs = 0;
+        _kiteAtSpotMs = 0;
+        _kiteWaitMs = 0;
+    }
+
+    /// <summary>
+    /// Drive the kite for <paramref name="target"/>. Returns true while the kite owns movement this
+    /// tick; false to engage normally (lone mob, gave up, or the pulled mob has reached us).
+    /// </summary>
+    private bool TickKite(Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter me, IBattleNpc target)
+    {
+        var now = Environment.TickCount64;
+        var engageRange = Math.Max(2.5f, target.HitboxRadius + 2.5f);
+        var job = FateTargeting.PlayerJob();
+        var melee = job.Role is 1 or 2;
+
+        if (_kiteGaveUp.Contains(target.GameObjectId)) return false;
+
+        // PULLED: it's coming for us. Melee jobs wait at the retreat spot until it's in reach, ranged
+        // jobs and healers already have it where they want it.
+        if (IsOnUs(target))
+        {
+            if (_kiteTargetId != target.GameObjectId || !melee) { ClearKite(); return false; }
+            // A mob that fights from range never walks up to us: don't wait on it for long.
+            var waitedOut = _kiteWaitMs != 0 && now - _kiteWaitMs > KiteWaitMs;
+            if (Vector3.Distance(me.Position, target.Position) <= engageRange || waitedOut
+                || now - _kiteStartMs > KiteTimeoutMs)
+            {
+                Diag("Combat", "kite", $"'{target.Name}' {(waitedOut ? "isn't coming" : "reached us")} -> fighting");
+                ClearKite();
+                return false;
+            }
+            StatusText = $"Kiting {target.Name} (waiting for it)";
+            if (Vector2.Distance(Flat(me.Position), Flat(_kiteRetreat)) > KiteSpotReach)
+                Navigator.MoveTo(C, _kiteRetreat, KiteSpotReach * 0.75f, allowMount: false);
+            else
+            {
+                Navigator.Stop();
+                if (_kiteWaitMs == 0) _kiteWaitMs = now;
+            }
+            return true;
+        }
+
+        // NEW TARGET: kite only if it has idle neighbours that would join in.
+        if (_kiteTargetId != target.GameObjectId)
+        {
+            var neighbours = FateTargeting.GetIdleHostiles(Vector3.Distance(me.Position, target.Position) + Logic.Kite.SafeGap)
+                .Where(h => h.GameObjectId != target.GameObjectId
+                            && Vector3.Distance(h.Position, target.Position) <= Logic.SafePull.CrowdRadius)
+                .Select(h => h.Position)
+                .ToList();
+            if (neighbours.Count == 0) { ClearKite(); return false; }
+            var pullAction = Logic.Kite.RangedPullAction(job.Id);
+            if (melee && pullAction == null)
+            {
+                _kiteGaveUp.Add(target.GameObjectId); // e.g. Monk: nothing to pull with
+                return false;
+            }
+
+            var spot = Logic.Kite.PullSpot(me.Position, target.Position, neighbours);
+            // Put it on the floor we'll be walking on (the target's height is only a guess there).
+            _kiteSpot = NavmeshIPC.PointOnFloor(spot + new Vector3(0, 10, 0), true, 5f) ?? spot;
+            var retreat = Logic.Kite.RetreatSpot(_kiteSpot, target.Position);
+            _kiteRetreat = NavmeshIPC.PointOnFloor(retreat + new Vector3(0, 10, 0), true, 5f) ?? retreat;
+            _kiteTargetId = target.GameObjectId;
+            _kiteStartMs = now;
+            _kiteAtSpotMs = 0;
+            Diag("Combat", "kite", $"'{target.Name}' has {neighbours.Count} idle neighbour(s) -> pulling it from {_kiteSpot}");
+        }
+
+        if (now - _kiteStartMs > KiteTimeoutMs
+            || (_kiteAtSpotMs != 0 && now - _kiteAtSpotMs > KitePullTimeoutMs))
+        {
+            Diag("Combat", "kite", $"couldn't pull '{target.Name}' from range -> walking in");
+            _kiteGaveUp.Add(target.GameObjectId);
+            ClearKite();
+            return false;
+        }
+
+        // GET TO THE SPOT.
+        if (Vector2.Distance(Flat(me.Position), Flat(_kiteSpot)) > KiteSpotReach)
+        {
+            StatusText = $"Kiting {target.Name} (moving to pull spot)";
+            Navigator.MoveTo(C, _kiteSpot, KiteSpotReach * 0.75f, allowMount: false);
+            return true;
+        }
+
+        // PULL IT.
+        Navigator.Stop();
+        if (_kiteAtSpotMs == 0) _kiteAtSpotMs = now;
+        StatusText = $"Kiting {target.Name} (pulling)";
+        if (EzThrottler.Throttle("AF_KitePull", 1000))
+        {
+            if (melee) FateTargeting.TryUseAction(Logic.Kite.RangedPullAction(job.Id)!.Value, target);
+            else FateTargeting.StartAutoAttack(target);
+        }
+        return true;
     }
 
     /// <summary>Is this mob targeting us or our chocobo?</summary>
@@ -2545,6 +2671,8 @@ public sealed unsafe class FarmingController
         _strayTargetId = 0;
         _strayDeadlineMs = 0;
         _strayWrittenOff.Clear();
+        ClearKite();
+        _kiteGaveUp.Clear();
         _collectInteractObjId = 0;
         _collectInteractCooldownMs = 0;
         _collectShedPoint = null;
@@ -2594,6 +2722,7 @@ public sealed unsafe class FarmingController
         _yieldUntilMs = 0; // clear the smart-mix yield latch
         _engagedTargetId = 0; // drop the sticky combat target so the next fate re-selects fresh
         _massPullTargetId = 0; // drop the sticky body-pull target too
+        ClearKite();
         TextAdvanceIPC.Disable(); // release collect turn-in control (no-op if we never took it)
 
         if (completed)

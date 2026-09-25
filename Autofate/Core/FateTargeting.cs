@@ -226,13 +226,41 @@ public static unsafe class FateTargeting
         return bnpc.TargetObjectId == myId || (chocoId != 0 && bnpc.TargetObjectId == chocoId);
     }
 
+    /// <summary>Our ClassJob row id and its role (1 tank, 2 melee, 3 ranged, 4 healer); zeros if unknown.</summary>
+    public static (uint Id, byte Role) PlayerJob()
+    {
+        try
+        {
+            if (Player.Object is { } me && me.ClassJob.ValueNullable is { } job)
+                return (job.RowId, job.Role);
+        }
+        catch { /* not logged in / sheet hiccup */ }
+        return (0, 0);
+    }
+
     /// <summary>The pull style in effect: the configured one, with Auto resolved by our job's role.</summary>
     public static Logic.PullStyle EffectivePullStyle(Configuration c)
+        => Logic.SafePull.Resolve(c.PullStyle, PlayerJob().Role); // unknown role -> Auto resolves to Safe
+
+    /// <summary>
+    /// Fire a specific action at a target (e.g. a ranged pull). Returns false when the game says it
+    /// can't be used right now (not learned, out of range, no line of sight, on cooldown).
+    /// </summary>
+    public static bool TryUseAction(uint actionId, IGameObject target)
     {
-        byte role = 0;
-        try { role = Player.Object?.ClassJob.ValueNullable?.Role ?? 0; }
-        catch { /* unknown role -> Auto resolves to Safe */ }
-        return Logic.SafePull.Resolve(c.PullStyle, role);
+        var am = FFXIVClientStructs.FFXIV.Client.Game.ActionManager.Instance();
+        if (am == null) return false;
+        try
+        {
+            var type = FFXIVClientStructs.FFXIV.Client.Game.ActionType.Action;
+            if (am->GetActionStatus(type, actionId, target.GameObjectId) != 0) return false;
+            return am->UseAction(type, actionId, target.GameObjectId);
+        }
+        catch (Exception e)
+        {
+            Svc.Log.Verbose($"[Combat] UseAction {actionId} failed: {e.Message}");
+            return false;
+        }
     }
 
     /// <summary>
