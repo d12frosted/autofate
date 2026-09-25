@@ -18,7 +18,7 @@ built on puni.sh integrations (ECommons foundation, EzIPC inter-plugin communica
 ### Farming modules:
 - **Leveling**: farm fates to level your current class to a target level. Automatically teleports to best zone for your current level, with a configurable level based zone cap).
 - **Single Zone**: farm one zone (set it to your current zone or pick from a list).
-- **Shared FATEs**: rotate through ShB / EW / DT zones, track completion and leave when complete.
+- **Shared FATEs**: rotate through ShB / EW / DT zones, track completion and leave when complete. Only zones with FATEs at your level (plus the "levels above" allowance) are visited, best fit first: zones whose lowest FATEs are at or below your level, highest first, then ones only reachable through the allowance.
 - **Atma**: the 12 ARR zodiac relic zones.
 - **Demiatma**: the 6 Dawntrail phantom relic zones.
 - **Luminous Crystals** & **Memories**: the Heavensward anima relic zones.

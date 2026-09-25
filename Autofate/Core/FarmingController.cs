@@ -694,7 +694,9 @@ public sealed unsafe class FarmingController
                 // rank is already maxed (only filter when we actually have the agent data).
                 if (C.SharedFateSkipMaxed && Features.SharedFateTracker.HasData())
                     all = all.Where(t => !Features.SharedFateTracker.IsZoneMaxed(t));
-                return all.ToArray();
+                // Only zones with FATEs we may run, best for our level first. The round-robin
+                // starts at the front, so this is also where we go from a city.
+                return Logic.SharedFateZones.Order(all, Player.Level, C.LevelsAbovePlayer);
             }
             case FarmingMode.Leveling:
             {
@@ -725,7 +727,9 @@ public sealed unsafe class FarmingController
         if (zones.Length == 0)
         {
             if (EzThrottler.Throttle("AF_NoZones", 10000))
-                Svc.Chat.PrintError("[Autofate] No zones configured for this mode.");
+                Svc.Chat.PrintError(C.Mode == FarmingMode.SharedFates
+                    ? "[Autofate] No unfinished Shared FATE zone has FATEs at your level."
+                    : "[Autofate] No zones configured for this mode.");
             return;
         }
 
@@ -872,9 +876,14 @@ public sealed unsafe class FarmingController
             else
             {
                 var remain = Math.Max(0, (dwellMs - dryFor) / 1000);
+                // Say so when there ARE fates here, just none we may run: "waiting for FATEs" reads
+                // as a spawn problem when the real problem is our level.
+                var tooHigh = Svc.Fates.Count(f => f != null && f.State == FateState.Running
+                                                   && f.Level > Player.Level + C.LevelsAbovePlayer);
+                var what = tooHigh > 0 ? $"No FATEs at your level here ({tooHigh} above it)" : "Waiting for FATEs";
                 StatusText = zones.Length > 1 && C.ZoneDwellSeconds > 0
-                    ? $"Waiting for FATEs ({remain}s before rotating zones)"
-                    : "Waiting for FATEs to spawn";
+                    ? $"{what} ({remain}s before rotating zones)"
+                    : tooHigh > 0 ? what : "Waiting for FATEs to spawn";
             }
             return;
         }
