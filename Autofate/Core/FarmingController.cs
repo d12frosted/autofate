@@ -143,6 +143,7 @@ public sealed unsafe class FarmingController
     // per fate (the latch), and any aetheryte a teleport fails to reach is dropped for the session
     // so we don't burn 5s on it every fate.
     private ushort _hopEvaluatedFateId;
+    private ushort _hopAirborneLoggedFateId; // fate we already logged "airborne, no teleport" for
     private uint _hopAetheryteId;
     private System.Numerics.Vector2 _hopDestination; // world X/Z of the aetheryte we're teleporting to
     private long _hopIssuedMs;
@@ -2413,7 +2414,12 @@ public sealed unsafe class FarmingController
         if (InCombat() || ECommons.GenericHelpers.IsOccupied() || Teleporter.IsBusy()) return false;
         if (Features.MountManager.IsFlying)
         {
-            Diag("Movement", "hopdecision", $"'{fate.Name}': already airborne, not considering a teleport");
+            // Not latched (we re-check once we land), so this runs every tick: log it once per fate.
+            if (_hopAirborneLoggedFateId != _targetFateId)
+            {
+                _hopAirborneLoggedFateId = _targetFateId;
+                Diag("Movement", "hopdecision", $"'{fate.Name}': already airborne, not considering a teleport");
+            }
             return false;
         }
 
