@@ -226,6 +226,37 @@ public static unsafe class FateTargeting
         return bnpc.TargetObjectId == myId || (chocoId != 0 && bnpc.TargetObjectId == chocoId);
     }
 
+    /// <summary>The pull style in effect: the configured one, with Auto resolved by our job's role.</summary>
+    public static Logic.PullStyle EffectivePullStyle(Configuration c)
+    {
+        byte role = 0;
+        try { role = Player.Object?.ClassJob.ValueNullable?.Role ?? 0; }
+        catch { /* unknown role -> Auto resolves to Safe */ }
+        return Logic.SafePull.Resolve(c.PullStyle, role);
+    }
+
+    /// <summary>
+    /// Attackable hostiles within <paramref name="maxRange"/> of us that aren't fighting anyone
+    /// (no target). Those are the ones that join in when we engage something next to them; a mob
+    /// busy with another player won't.
+    /// </summary>
+    public static List<IBattleNpc> GetIdleHostiles(float maxRange)
+    {
+        var result = new List<IBattleNpc>();
+        var me = Player.Object;
+        if (me == null) return result;
+        var rangeSq = maxRange * maxRange;
+        foreach (var obj in Svc.Objects)
+        {
+            if (obj is not IBattleNpc bnpc) continue;
+            if (bnpc.TargetObjectId != 0) continue;
+            if (!IsAttackableEnemy(bnpc)) continue;
+            if (Vector3.DistanceSquared(me.Position, bnpc.Position) > rangeSq) continue;
+            result.Add(bnpc);
+        }
+        return result;
+    }
+
     /// <summary>
     /// Ground collectables for a collect fate (e.g. "Fallen Lumber"): interactable EventObj objects
     /// carrying this FateId. Nearest-first.

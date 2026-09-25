@@ -29,7 +29,8 @@ public sealed class GemstoneBuyEntry
 
 public sealed class Configuration
 {
-    public int Version { get; set; } = 1;
+    /// <summary>Config schema version; <see cref="Plugin"/> migrates older ones on load (2: PullStyle).</summary>
+    public int Version { get; set; } = 2;
 
     // ------------------------------------------------------------------ Mode
     public FarmingMode Mode = FarmingMode.Leveling;
@@ -72,9 +73,11 @@ public sealed class Configuration
     public bool PrioritizeLowTimer = true;
     /// <summary>Sync level to the fate we travel to (and avoid syncing to pass-through fates).</summary>
     public bool AutoLevelSync = true;
-    /// <summary>Pull every enemy in the fate area.</summary>
+    /// <summary>How we take on a fate's mobs: one at a time (Safe), a pile at a time (Yolo), or by role.</summary>
+    public Logic.PullStyle PullStyle = Logic.PullStyle.Auto;
+    /// <summary>Legacy (config v1) mass-pull toggle, replaced by <see cref="PullStyle"/>. Only read by the migration.</summary>
     public bool MassPull = true;
-    /// <summary>Max number of enemies to hold aggro on at once during mass pull.</summary>
+    /// <summary>Max number of enemies to hold aggro on at once during mass pull (Yolo).</summary>
     public int MassPullMaxPile = 2;
     /// <summary>
     /// Once something is on us, only body-pull mobs within this many yalms. Walking further drags

@@ -1,9 +1,17 @@
 using Dalamud.Bindings.ImGui;
+using ECommons.ImGuiMethods;
 
 namespace Autofate.UI;
 
 public sealed partial class MainWindow
 {
+    private static readonly Dictionary<Logic.PullStyle, string> PullStyleNames = new()
+    {
+        [Logic.PullStyle.Auto] = "Auto (by role)",
+        [Logic.PullStyle.Safe] = "Safe (one at a time)",
+        [Logic.PullStyle.Yolo] = "Yolo (mass pull)",
+    };
+
     private void DrawFateEngineTab()
     {
         // Combat section first (rotation backend + fixed hybrid movement).
@@ -60,9 +68,16 @@ public sealed partial class MainWindow
         ImGui.Separator();
         ImGui.TextUnformatted("Engagement:");
 
-        var massPull = C.MassPull;
-        if (ImGui.Checkbox("Mass-pull enemies in the area", ref massPull)) { C.MassPull = massPull; Save(); }
-        if (C.MassPull)
+        var style = C.PullStyle;
+        if (ImGuiEx.EnumCombo("Pull style", ref style, PullStyleNames)) { C.PullStyle = style; Save(); }
+        ImGui.SameLine(); Help("Safe: one mob at a time. Whatever is hitting you is fought first, then the mob with the "
+            + "fewest idle enemies around it, so you don't walk into packs. Slower, but melee DPS and healers survive it.\n\n"
+            + "Yolo: mass pull. Gathers mobs up to the cap below and AOEs them down. Fast, for tanks and parties.\n\n"
+            + "Auto: Yolo on a tank, Safe on everything else.");
+        var effective = Core.FateTargeting.EffectivePullStyle(C);
+        if (C.PullStyle == Logic.PullStyle.Auto)
+            ImGui.TextDisabled($"Current job: {PullStyleNames[effective]}");
+        if (effective == Logic.PullStyle.Yolo)
         {
             ImGui.Indent();
             var maxPile = C.MassPullMaxPile;

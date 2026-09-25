@@ -159,9 +159,9 @@ public static class IPCManager
         if (!BossModIPC.IsInstalled) return;
         // BMR is always in play (it's the fixed movement/AOE backend), so always apply.
         if (!ECommons.Throttlers.EzThrottler.Throttle("AF_BmrFateTarget", 2000)) return;
-        // MaxTargets 0 = unlimited; map "mass pull off" to unlimited so we don't artificially
-        // throttle the rotation, and "mass pull on" to our configured pile cap.
-        var maxTargets = c.MassPull ? Math.Max(1, c.MassPullMaxPile) : 0;
+        // MaxTargets 0 = unlimited; map Safe to unlimited so we don't artificially throttle the
+        // rotation (our own target choice keeps it to one mob), and Yolo to the configured pile cap.
+        var maxTargets = Core.FateTargeting.EffectivePullStyle(c) == Logic.PullStyle.Yolo ? Math.Max(1, c.MassPullMaxPile) : 0;
         BossModIPC.ApplyFateTargeting(BossModPreset.Name, maxTargets);
     }
 

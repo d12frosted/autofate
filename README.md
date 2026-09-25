@@ -35,7 +35,9 @@ Collection modes (Atma/Demiatma/Luminous/Memories) track the required items in y
 - **The Forlorn and the Forlorn Maiden are killed first.** Whenever one is up in our fate we drop whatever we were doing and go kill it: the Twist of Fate buff it leaves behind raises EXP and gemstones on every fate until we leave the zone, which is worth more than this one fate, and it despawns on its own if we take our time. It outranks the sticky target, stray aggro, mass-pull, the defend/escort peel, and collect-fate gathering.
 - Run fates up to **N levels above** your level (default 2).
 - **Auto level-sync** to the target fate: Sync upon arrival to fate so as not to accidentally sync with fates along the path.
-- **Mass-pull** toggle with a configurable enemy cap (can only adhere to this as best as reasonably possible)
+- **Pull style**: Safe, Yolo, or Auto (the default: Yolo on a tank, Safe on everything else).
+  - **Safe** fights one mob at a time. Anything of the fate's hitting you comes first; otherwise it picks the mob with the fewest idle enemies around it, weighed against distance, so melee DPS and healers don't walk into packs.
+  - **Yolo** is mass pull, with a configurable enemy cap (can only adhere to this as best as reasonably possible).
 - **Mass-pull stays local.** With nothing on us we walk to the nearest mob, however far. Once something is on us, only mobs within the pull radius (20y by default) get pulled; the rest wait until the pile is dead. Walking further would drag the pile along until it drops aggro, and then we'd walk back for it.
 - **FATE blacklist**: never navigate to named fates.
 - **Follow party leader**: skip our own pathing and just run whatever fate the leader drops us
