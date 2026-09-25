@@ -961,14 +961,32 @@ public sealed unsafe class FarmingController
         }
 
         // Combat fates (and Collect fates already underway): travel to a RANDOM LANDABLE interior
-        // point. ARRIVAL = inside the fate boundaries AND within ~4y of that dropoff. That decisively
-        // ends fate-travel nav, drops us, and hands off to enemy navigation (TickInFate). We do NOT
-        // arrive on inside-ring alone (that dropped us at the edge / re-navved).
+        // point. ARRIVAL = on that dropoff: horizontally within a few yalms and at its height or a
+        // little above (see FateLanding). The dropoff is inside the ring by construction, so that
+        // also means we're in the fate. That decisively ends fate-travel nav, drops us, and hands
+        // off to enemy navigation (TickInFate). We do NOT arrive on inside-ring alone (that dropped
+        // us at the edge / re-navved).
         _fateDropoff ??= RandomPointInFate(fate);
-        if (insideRing && Vector3.Distance(me0.Position, _fateDropoff.Value) <= 4f)
+        var landing = Logic.FateLanding.Classify(me0.Position, _fateDropoff.Value);
+        if (landing == Logic.FateLanding.State.Arrived)
         {
+            _climbingOut = false;
             ArriveAtFate(fate);
             return;
+        }
+        // UNDER THE FLOOR: at the dropoff horizontally but below it, i.e. under a floating island
+        // (Ultima Thule, Elpis). Flying straight up goes nowhere, so aim at open air well above the
+        // dropoff until we're over the floor again; vnav routes around the island's edge to get there.
+        if (landing == Logic.FateLanding.State.UnderFloor && !_climbingOut)
+        {
+            _climbingOut = true;
+            Navigator.Stop();
+            Diag("Movement", "underfloor", $"under the floor at the dropoff (me={me0.Position} dropoff={_fateDropoff}) -> climbing out");
+        }
+        else if (_climbingOut && Logic.FateLanding.ClimbedOut(me0.Position, _fateDropoff.Value))
+        {
+            _climbingOut = false;
+            Diag("Movement", "underfloor", "above the floor again -> landing");
         }
 
         // STUCK -> re-roll: if we barely move for >2s the dropoff is unreachable; pick a new random
@@ -995,6 +1013,7 @@ public sealed unsafe class FarmingController
             {
                 Navigator.Stop();
                 _fateDropoff = RandomPointInFate(fate);
+                _climbingOut = false;
                 Diag("Movement", "fatestuck", $"stuck >{FateStuckWindowMs}ms -> new random dropoff {_fateDropoff}");
             }
             _fateStuckLastSampleMs = nowMs;
@@ -1007,8 +1026,13 @@ public sealed unsafe class FarmingController
                 + $"dropoffDist={Vector3.Distance(me0.Position, _fateDropoff.Value):F0}y "
                 + $"navRunning={NavmeshIPC.IsRunning()} pathfinding={NavmeshIPC.PathfindInProgress()} "
                 + $"mounted={Features.MountManager.IsMounted} flying={Features.MountManager.IsFlying} "
-                + $"meshReady={NavmeshIPC.MeshReady()}");
-        Navigator.MoveTo(C, _fateDropoff.Value, 4f, allowMount: true);
+                + $"meshReady={NavmeshIPC.MeshReady()} landing={landing} climbingOut={_climbingOut}");
+        // Flying: aim above the floor, never at it. vnav stops a fly-to once it's within the stop
+        // range in 3D, and aimed at the surface it can get there from underneath, through the floor.
+        // On foot (or before we've mounted) the dropoff itself is the target.
+        var flyingLeg = Features.MountManager.IsMounted && Features.MountManager.ShouldFly(C);
+        var flyTo = flyingLeg ? Logic.FateLanding.FlightTarget(_fateDropoff.Value, _climbingOut) : _fateDropoff.Value;
+        Navigator.MoveTo(C, flyTo, Logic.FateLanding.ArriveRadius, allowMount: true);
     }
 
     /// <summary>
@@ -1120,6 +1144,7 @@ public sealed unsafe class FarmingController
     private bool _fatePosSampled;    // have we sampled _fateInitialPos yet?
     private bool _ringMovedFollow;   // ring has moved enough -> treat as follow fate (latched)
     private Vector3? _fateDropoff;   // randomized dropoff spot inside the current fate ring
+    private bool _climbingOut;       // under the floor at the dropoff: flying up and around before landing
     private const float RingMoveFollowThreshold = 8f; // yalms of ring drift to call it an escort
     private long _dismountedForNpcMs; // when we dismounted to talk to a fate NPC (settle delay)
 
@@ -2454,6 +2479,7 @@ public sealed unsafe class FarmingController
         _fatePosSampled = false;
         _ringMovedFollow = false;
         _fateDropoff = null;
+        _climbingOut = false;
         _fateStuckLastSampleMs = 0;
         _groundStuckLastMs = 0;
         _groundJumpPhase = 0;

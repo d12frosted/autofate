@@ -50,6 +50,7 @@ Collection modes (Atma/Demiatma/Luminous/Memories) track the required items in y
 - vnavmesh navigation with automatic mounting / flight (pick your mount).
 - Lifestream for between-zone teleporting and an optional end-of-run command + chocobo leveling (see below)
 - Optional **teleport to the nearest aetheryte**: when the picked fate is far away, hop to the attuned aetheryte closest to it instead of flying the whole zone (off by default, costs gil, with distance and minimum-saving thresholds).
+- **Landing from above.** Flights to a fate aim a few yalms above the landing spot, never at it, so vnavmesh can't stop short underneath a floating island (Ultima Thule, Elpis). Arrival means being on the spot and at its height; if we do end up under the floor, we climb to open air above the spot first and land from there.
 - **Aggro picked up in the air is ignored.** Nothing on the ground can reach you while flying, so a mob that tags you mid-trip never costs you the flight: we stay on the mount and keep going. On foot, only something actually hitting you (or your chocobo) stops the trip.
 - **Stray aggro is a single-target fight.** While we kill the mob that stopped us, BossMod is pinned to that one target: no auto-targeting and no AOE actions, so the passive mobs standing next to it are left alone instead of being pulled in. The fate-clearing targeting comes back as soon as we move on.
 
