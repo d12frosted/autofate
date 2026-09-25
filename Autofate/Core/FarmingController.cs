@@ -951,7 +951,9 @@ public sealed unsafe class FarmingController
         var startNpcNeeded = type is FateType.Escort or FateType.Defend
             || FateSelector.IsPreparing(fate)
             || (type == FateType.Collect && FateTargeting.GetNearestFateEnemy(_targetFateId) == null);
-        if (startNpcNeeded)
+        // If we couldn't dismount where the ring first took us, _landOnDropoff sends us down the
+        // dropoff path below instead: a landable spot, then the NPC on foot from there.
+        if (startNpcNeeded && !_landOnDropoff)
         {
             if (insideRing) { ArriveAtFate(fate); return; }
             var npc = FateTargeting.FindFateStartNpc(_targetFateId, fate.Radius);
@@ -1049,10 +1051,28 @@ public sealed unsafe class FarmingController
 
         if (Features.MountManager.IsMounted || Features.MountManager.IsFlying)
         {
+            // CAN'T LAND HERE. The game only lets us dismount over landable ground; over a pit, water
+            // or a steep slope the dismount just doesn't happen, and we'd hover saying "dismounting"
+            // forever. NPC-start fates are most exposed, since they "arrive" the moment we cross into
+            // the ring, wherever that is. If we're still up after a few seconds, pick a spot vnav
+            // says is landable and fly there first.
+            var now = Environment.TickCount64;
+            if (_dismountSinceMs == 0) _dismountSinceMs = now;
+            if (now - _dismountSinceMs >= DismountStallMs)
+            {
+                _dismountSinceMs = 0;
+                _fateDropoff = RandomPointInFate(fate);
+                _climbingOut = false;
+                _landOnDropoff = true;
+                Diag("Movement", "cantland", $"still mounted {DismountStallMs / 1000}s after arriving at '{fate.Name}' -> landing at {_fateDropoff} instead");
+                return;
+            }
             StatusText = $"Arrived at fate: {fate.Name} (dismounting)";
             Features.MountManager.Dismount(); // throttled internally; re-checked next tick
             return;
         }
+        _dismountSinceMs = 0;
+        _landOnDropoff = false;
 
         // Grounded -> begin the fate.
         if (C.AutoLevelSync) SyncToFate();
@@ -1146,6 +1166,12 @@ public sealed unsafe class FarmingController
     private bool _ringMovedFollow;   // ring has moved enough -> treat as follow fate (latched)
     private Vector3? _fateDropoff;   // randomized dropoff spot inside the current fate ring
     private bool _climbingOut;       // under the floor at the dropoff: flying up and around before landing
+    // Arrived but still mounted since (0 = not waiting), and whether that sent us to land on the
+    // dropoff instead of where we first arrived (see ArriveAtFate).
+    private long _dismountSinceMs;
+    private bool _landOnDropoff;
+    // Descending from a hover takes a second or two; past this we can't land where we are.
+    private const long DismountStallMs = 5000;
     private const float RingMoveFollowThreshold = 8f; // yalms of ring drift to call it an escort
     private long _dismountedForNpcMs; // when we dismounted to talk to a fate NPC (settle delay)
 
@@ -2531,6 +2557,8 @@ public sealed unsafe class FarmingController
         _ringMovedFollow = false;
         _fateDropoff = null;
         _climbingOut = false;
+        _dismountSinceMs = 0;
+        _landOnDropoff = false;
         _fateStuckLastSampleMs = 0;
         _groundStuckLastMs = 0;
         _groundJumpPhase = 0;
