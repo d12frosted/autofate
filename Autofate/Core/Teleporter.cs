@@ -100,13 +100,13 @@ public static unsafe class Teleporter
 
     // ------------------------------------------------------------------ nearest aetheryte
 
-    /// <summary>An attunable aetheryte with the world position it drops you at.</summary>
-    public readonly record struct AetheryteInfo(uint RowId, string Name, Vector3 Position);
+    /// <summary>An aetheryte with its world X/Z (<see cref="Vector2"/>, Y holding Z).</summary>
+    public readonly record struct AetheryteInfo(uint RowId, string Name, Vector2 Position);
 
     // Aetheryte lists never change at runtime, so resolve each territory once.
     private static readonly Dictionary<uint, List<AetheryteInfo>> AetheryteCache = new();
 
-    /// <summary>All main aetherytes in a territory, with world positions (Excel-backed, cached).</summary>
+    /// <summary>All main aetherytes in a territory, with world X/Z (Excel-backed, cached).</summary>
     public static IReadOnlyList<AetheryteInfo> AetherytesInTerritory(uint territoryId)
     {
         if (AetheryteCache.TryGetValue(territoryId, out var cached)) return cached;
@@ -114,18 +114,26 @@ public static unsafe class Teleporter
         var list = new List<AetheryteInfo>();
         try
         {
+            var markers = Svc.Data.GetSubrowExcelSheet<MapMarker>();
             foreach (var a in Svc.Data.GetExcelSheet<Aetheryte>())
             {
                 if (a.RowId == 0 || !a.IsAetheryte) continue;
                 if (a.Territory.RowId != territoryId) continue;
-                // The aetheryte's physical spot lives in the Level sheet (that's where teleporting
-                // drops us). Skip rows without one rather than guessing from map markers.
-                if (a.Level.Count == 0) continue;
-                if (a.Level[0].ValueNullable is not { } lvl) continue;
-                var pos = new Vector3(lvl.X, lvl.Y, lvl.Z);
-                if (pos == Vector3.Zero) continue;
+                // The position comes from the aetheryte's marker on its map. Aetheryte.Level looks
+                // like the obvious source but points at rows the Level sheet doesn't have, for
+                // every field aetheryte, so it resolved nothing. Markers have no height: X/Z only.
+                if (a.Map.ValueNullable is not { } map) continue;
+                if (!markers.TryGetRow(map.MapMarkerRange, out var mapMarkers)) continue;
+                Vector2? pos = null;
+                foreach (var m in mapMarkers)
+                {
+                    if (m.DataType != 3 || m.DataKey.RowId != a.RowId) continue; // 3 = aetheryte
+                    pos = Logic.AetheryteHop.MarkerToWorld(m.X, m.Y, map.SizeFactor, map.OffsetX, map.OffsetY);
+                    break;
+                }
+                if (pos == null) continue;
                 var name = a.PlaceName.ValueNullable?.Name.ToString();
-                list.Add(new AetheryteInfo(a.RowId, string.IsNullOrEmpty(name) ? $"Aetheryte #{a.RowId}" : name!, pos));
+                list.Add(new AetheryteInfo(a.RowId, string.IsNullOrEmpty(name) ? $"Aetheryte #{a.RowId}" : name!, pos.Value));
             }
         }
         catch (Exception e) { Svc.Log.Warning($"[Teleporter] Failed to read aetherytes for territory {territoryId}: {e.Message}"); }
@@ -143,26 +151,6 @@ public static unsafe class Teleporter
             return ui == null || ui->IsAetheryteUnlocked(aetheryteId);
         }
         catch { return true; }
-    }
-
-    /// <summary>
-    /// The attuned aetheryte in <paramref name="territoryId"/> closest to <paramref name="target"/>,
-    /// or null if the zone has none. <paramref name="allow"/> can veto individual aetherytes.
-    /// </summary>
-    public static AetheryteInfo? FindNearestAetheryte(uint territoryId, Vector3 target, Func<uint, bool>? allow = null)
-    {
-        AetheryteInfo? best = null;
-        var bestDist = float.MaxValue;
-        foreach (var a in AetherytesInTerritory(territoryId))
-        {
-            if (allow != null && !allow(a.RowId)) continue;
-            if (!IsAttuned(a.RowId)) continue;
-            var d = Vector3.Distance(a.Position, target);
-            if (d >= bestDist) continue;
-            best = a;
-            bestDist = d;
-        }
-        return best;
     }
 
     /// <summary>
