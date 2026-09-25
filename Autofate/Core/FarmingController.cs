@@ -1024,7 +1024,11 @@ public sealed unsafe class FarmingController
         if (C.AutoLevelSync) SyncToFate();
         Stats.OnFateAttempted();
         Features.ChocoboManager.SampleXpAtFateStart();
-        SetCombatBackend(true);
+        // BMR's AI (dodging) comes on now, the rotation only once there is something of the fate's
+        // to fight. A fate that hasn't started has no mobs, so an active rotation's auto-target
+        // grabs whatever hostile happens to be nearby while we walk to the start NPC.
+        SetAiActive(true);
+        SetRotationActive(!FateSelector.IsPreparing(fate));
         State = FarmState.InFate;
     }
 
@@ -1294,6 +1298,9 @@ public sealed unsafe class FarmingController
         // start NPC in sight do we hold the spawn point in case it goes live on its own, bounded.
         if (FateSelector.IsPreparing(fate))
         {
+            // No fate mobs yet: keep the rotation from picking a fight with whatever is nearby.
+            // Unless something is already hitting us: the NPC won't talk to us in combat anyway.
+            SetRotationActive(FateTargeting.GetEnemiesAttackingMe().Count > 0);
             var nowPrep = Environment.TickCount64;
             if (_preparingSinceMs == 0) _preparingSinceMs = nowPrep;
             var waited = (nowPrep - _preparingSinceMs) / 1000;
@@ -1376,6 +1383,8 @@ public sealed unsafe class FarmingController
         {
             // Latch prevents re-talking to a start NPC we've already engaged (accept loop).
             var canStart = notStarted && _startedFateId != _targetFateId;
+            // Same as preparing: nothing of the fate's to fight until the NPC starts it.
+            if (canStart || dialogueOpen) SetRotationActive(FateTargeting.GetEnemiesAttackingMe().Count > 0);
             if ((canStart || dialogueOpen) && TryStartFateViaNpc(fate)) return;
         }
 
@@ -1435,6 +1444,8 @@ public sealed unsafe class FarmingController
                 HandleCollectFate(fate);
                 break;
             default:
+                // Started (or never needed its NPC): now there is something to fight.
+                SetRotationActive(true);
                 if (isFollowFate) { HandleEscortFate(fate); break; }
                 // Battle / Boss / Defend: combat backend does the work. We just make sure we have a target.
                 EnsureCombatEngaged(fate);
