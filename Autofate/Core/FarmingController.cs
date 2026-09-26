@@ -976,6 +976,25 @@ public sealed unsafe class FarmingController
         // off to enemy navigation (TickInFate). We do NOT arrive on inside-ring alone (that dropped
         // us at the edge / re-navved).
         _fateDropoff ??= RandomPointInFate(fate);
+        // SAFE: don't land in a pack. From afar the fate's mobs aren't loaded yet, so once we're
+        // close enough to see them, re-pick the dropoff among several landable spots, taking the
+        // one clear of hostiles (Logic.SafeLanding). Once per fate.
+        if (!_dropoffSafetyChecked && FateTargeting.EffectivePullStyle(C) == Logic.PullStyle.Safe
+            && Vector3.Distance(me0.Position, fate.Position) <= fate.Radius + SafeLandingCheckRange)
+        {
+            _dropoffSafetyChecked = true;
+            var spots = Enumerable.Range(0, 10).Select(_ => RandomPointInFate(fate)).Append(_fateDropoff.Value).ToList();
+            var hostiles = FateTargeting.GetHostilesAround(fate.Position, fate.Radius + Logic.SafeLanding.Clearance);
+            var pick = Logic.SafeLanding.Pick(me0.Position, spots, hostiles);
+            if (pick != _fateDropoff.Value)
+            {
+                Diag("Movement", "safelanding", $"{hostiles.Count} hostiles around '{fate.Name}' -> landing at {pick} instead of {_fateDropoff}");
+                _fateDropoff = pick;
+                _climbingOut = false;
+                _travelProgress.Reset();
+                Navigator.Stop();
+            }
+        }
         var landing = Logic.FateLanding.Classify(me0.Position, _fateDropoff.Value);
         if (landing == Logic.FateLanding.State.Arrived)
         {
@@ -1217,7 +1236,9 @@ public sealed unsafe class FarmingController
     private bool _fatePosSampled;    // have we sampled _fateInitialPos yet?
     private bool _ringMovedFollow;   // ring has moved enough -> treat as follow fate (latched)
     private Vector3? _fateDropoff;   // randomized dropoff spot inside the current fate ring
-    private bool _climbingOut;       // under the floor at the dropoff: flying up and around before landing
+    private bool _climbingOut;
+    private bool _dropoffSafetyChecked; // Safe style re-picked the dropoff clear of hostiles (see TickTravelingToFate)
+    private const float SafeLandingCheckRange = 80f; // beyond the ring: close enough for its mobs to be loaded       // under the floor at the dropoff: flying up and around before landing
     // Arrived but still mounted since (0 = not waiting), and whether that sent us to land on the
     // dropoff instead of where we first arrived (see ArriveAtFate).
     private long _dismountSinceMs;
@@ -1644,6 +1665,8 @@ public sealed unsafe class FarmingController
             // movement, in which case it'll reposition us itself).
             _engagedTargetId = 0;
             _massPullTargetId = 0;
+            // Safe is holding off on purpose (in combat / low HP): stay put and keep its status.
+            if (_safeHolding) { _safeHolding = false; return; }
             Diag("Combat", "notarget", $"no fate enemy; driftToCenter={(!BmrMovementActive() && Vector3.Distance(me.Position, fate.Position) > fate.Radius * 0.4f)} distToCenter={Vector3.Distance(me.Position, fate.Position):F1} radius={fate.Radius:F1}");
             if (!BmrMovementActive() && Vector3.Distance(me.Position, fate.Position) > fate.Radius * 0.4f)
                 Navigator.MoveTo(C, fate.Position, Math.Max(2f, fate.Radius * 0.4f), allowMount: false);
@@ -1827,7 +1850,35 @@ public sealed unsafe class FarmingController
         {
             if (_engagedTargetId != onUs.GameObjectId)
                 Diag("Combat", "safe", $"'{onUs.Name}' is on us -> fighting it before anything new");
+            _safeHoldSinceMs = 0;
             return onUs;
+        }
+
+        //    Safe: nothing on us, so whatever comes next is a NEW pull (or finishing one we started).
+        //    Don't start one while still in combat: mobs an AOE clipped take a moment to turn on us,
+        //    and going off to pull something else meanwhile is how one fight becomes three. Nor
+        //    while hurt; out of combat HP is back in seconds. Bounded, so a combat flag that never
+        //    clears can't park us for good.
+        if (safe && NearestFateMobOnUs() == null && !(Svc.Objects.SearchById(_engagedTargetId) is IBattleNpc pulling
+                                                       && pulling.GameObjectId == _kiteTargetId && !InCombat()))
+        {
+            var me = Player.Object;
+            var hp = me is { MaxHp: > 0 } ? (float)me.CurrentHp / me.MaxHp : 1f;
+            var why = InCombat() ? "still in combat" : !Logic.SafePull.MayStartNewPull(hp) ? $"HP {hp:P0}" : null;
+            var now = Environment.TickCount64;
+            if (why != null)
+            {
+                if (_safeHoldSinceMs == 0) _safeHoldSinceMs = now;
+                if (now - _safeHoldSinceMs < SafeHoldMaxMs)
+                {
+                    Diag("Combat", "safehold", $"not starting a new pull: {why}");
+                    Navigator.Stop();
+                    StatusText = $"Safe: waiting ({why})";
+                    _safeHolding = true;
+                    return null;
+                }
+            }
+            else _safeHoldSinceMs = 0;
         }
 
         if (_engagedTargetId != 0
@@ -1853,33 +1904,45 @@ public sealed unsafe class FarmingController
     }
 
     // ---------------------------------------------------------------- safe: kiting
-    // Safe style, target standing near other idle mobs: walking up to it would pull them too. So we
-    // stand Kite.PullRange away from it, clear of its neighbours, pull it with a ranged attack (our
-    // normal attack for ranged jobs and healers), and melee jobs back off a little further so it
-    // comes to us away from the pack. A lone mob is just walked up to, as before.
+    // Safe style. A mob standing alone is walked up to. A mob with idle company is KITED: we attack
+    // it from range where we stand if we can (in range, nothing else close to us), else from a spot
+    // Kite.PullRange away from it, clear of every other idle mob, and then let it come to us, away
+    // from its pack. Anything already on us is also left to come to us: walking at it walks us into
+    // whatever is standing next to it. We only walk to a mob that is on us but isn't coming (ranged
+    // mobs, stuck ones).
     private ulong _kiteTargetId;
-    private Vector3 _kiteSpot, _kiteRetreat;
-    private long _kiteStartMs, _kiteAtSpotMs, _kiteWaitMs;
+    private Vector3 _kiteSpot;
+    // Safe hold (see SelectCombatTarget): since when we've been waiting before a new pull, and how long at most.
+    private long _safeHoldSinceMs;
+    private bool _safeHolding; // this tick's "no target" is the Safe hold, not an empty fate
+    private const long SafeHoldMaxMs = 10000;
+    private long _kiteStartMs, _kiteAtSpotMs;
     private readonly HashSet<ulong> _kiteGaveUp = new(); // mobs we couldn't kite this fate: walk in
     // Getting to the spot and pulling shouldn't take longer than this; past it we walk in instead.
     private const long KiteTimeoutMs = 30000;
     // Standing at the spot without the pull landing (no line of sight, action unusable...).
     private const long KitePullTimeoutMs = 6000;
     private const float KiteSpotReach = 2f;
-    // Melee jobs waiting at the retreat spot for the pulled mob to arrive.
-    private const long KiteWaitMs = 5000;
+    // Waiting for a mob on us to come: it has to have closed in by ApproachMinGain within this.
+    private ulong _approachId;
+    private float _approachBest;
+    private long _approachSinceMs;
+    private const long ApproachStallMs = 3000;
+    private const float ApproachMinGain = 1f;
+    // Ranged jobs and healers fight from where they stand while the mob is within this.
+    private const float RangedFightRange = 20f;
 
     private void ClearKite()
     {
         _kiteTargetId = 0;
         _kiteStartMs = 0;
         _kiteAtSpotMs = 0;
-        _kiteWaitMs = 0;
+        _approachId = 0;
     }
 
     /// <summary>
-    /// Drive the kite for <paramref name="target"/>. Returns true while the kite owns movement this
-    /// tick; false to engage normally (lone mob, gave up, or the pulled mob has reached us).
+    /// Safe-style movement for <paramref name="target"/>. Returns true while it owns movement this
+    /// tick; false to engage normally (a lone mob, a mob in reach, one that isn't coming, gave up).
     /// </summary>
     private bool TickKite(Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter me, IBattleNpc target)
     {
@@ -1887,43 +1950,47 @@ public sealed unsafe class FarmingController
         var engageRange = Math.Max(2.5f, target.HitboxRadius + 2.5f);
         var job = FateTargeting.PlayerJob();
         var melee = job.Role is 1 or 2;
+        var dist = Vector3.Distance(me.Position, target.Position);
+
+        // ON US: let it come. Ranged jobs and healers fight it from here while it's in reach.
+        if (IsOnUs(target))
+        {
+            _kiteTargetId = 0; // pulled (by us or otherwise): the pull part is over
+            if (dist <= engageRange) { _approachId = 0; return false; }
+            if (!melee && dist <= RangedFightRange)
+            {
+                Navigator.Stop();
+                StatusText = $"Fighting {target.Name} from range";
+                return true;
+            }
+            if (_approachId != target.GameObjectId || _approachBest - dist >= ApproachMinGain)
+            {
+                _approachId = target.GameObjectId;
+                _approachBest = dist;
+                _approachSinceMs = now;
+            }
+            if (now - _approachSinceMs > ApproachStallMs)
+            {
+                Diag("Combat", "kite", $"'{target.Name}' is on us but isn't coming ({dist:F0}y) -> walking to it");
+                return false;
+            }
+            Navigator.Stop();
+            StatusText = $"Kiting {target.Name} (letting it come, {dist:F0}y)";
+            return true;
+        }
+        _approachId = 0;
 
         if (_kiteGaveUp.Contains(target.GameObjectId)) return false;
 
-        // PULLED: it's coming for us. Melee jobs wait at the retreat spot until it's in reach, ranged
-        // jobs and healers already have it where they want it.
-        if (IsOnUs(target))
-        {
-            if (_kiteTargetId != target.GameObjectId || !melee) { ClearKite(); return false; }
-            // A mob that fights from range never walks up to us: don't wait on it for long.
-            var waitedOut = _kiteWaitMs != 0 && now - _kiteWaitMs > KiteWaitMs;
-            if (Vector3.Distance(me.Position, target.Position) <= engageRange || waitedOut
-                || now - _kiteStartMs > KiteTimeoutMs)
-            {
-                Diag("Combat", "kite", $"'{target.Name}' {(waitedOut ? "isn't coming" : "reached us")} -> fighting");
-                ClearKite();
-                return false;
-            }
-            StatusText = $"Kiting {target.Name} (waiting for it)";
-            if (Vector2.Distance(Flat(me.Position), Flat(_kiteRetreat)) > KiteSpotReach)
-                Navigator.MoveTo(C, _kiteRetreat, KiteSpotReach * 0.75f, allowMount: false);
-            else
-            {
-                Navigator.Stop();
-                if (_kiteWaitMs == 0) _kiteWaitMs = now;
-            }
-            return true;
-        }
-
-        // NEW TARGET: kite only if it has idle neighbours that would join in.
+        // NEW TARGET: kite only if it has idle company that would join in.
         if (_kiteTargetId != target.GameObjectId)
         {
-            var neighbours = FateTargeting.GetIdleHostiles(Vector3.Distance(me.Position, target.Position) + Logic.Kite.SafeGap)
-                .Where(h => h.GameObjectId != target.GameObjectId
-                            && Vector3.Distance(h.Position, target.Position) <= Logic.SafePull.CrowdRadius)
+            var others = FateTargeting.GetIdleHostiles(dist + Logic.SafePull.CrowdRadius * 2)
+                .Where(h => h.GameObjectId != target.GameObjectId)
                 .Select(h => h.Position)
                 .ToList();
-            if (neighbours.Count == 0) { ClearKite(); return false; }
+            var neighbours = others.Count(o => Vector3.Distance(o, target.Position) <= Logic.SafePull.CrowdRadius);
+            if (neighbours == 0) return false; // on its own: just go hit it
             var pullAction = Logic.Kite.RangedPullAction(job.Id);
             if (melee && pullAction == null)
             {
@@ -1931,15 +1998,19 @@ public sealed unsafe class FarmingController
                 return false;
             }
 
-            var spot = Logic.Kite.PullSpot(me.Position, target.Position, neighbours);
-            // Put it on the floor we'll be walking on (the target's height is only a guess there).
-            _kiteSpot = NavmeshIPC.PointOnFloor(spot + new Vector3(0, 10, 0), true, 5f) ?? spot;
-            var retreat = Logic.Kite.RetreatSpot(_kiteSpot, target.Position);
-            _kiteRetreat = NavmeshIPC.PointOnFloor(retreat + new Vector3(0, 10, 0), true, 5f) ?? retreat;
+            if (Logic.Kite.CanPullFromHere(me.Position, target.Position, others))
+                _kiteSpot = me.Position;
+            else
+            {
+                var spot = Logic.Kite.PullSpot(me.Position, target.Position, others);
+                // Put it on the floor we'll be walking on (the target's height is only a guess there).
+                _kiteSpot = NavmeshIPC.PointOnFloor(spot + new Vector3(0, 10, 0), true, 5f) ?? spot;
+            }
             _kiteTargetId = target.GameObjectId;
             _kiteStartMs = now;
             _kiteAtSpotMs = 0;
-            Diag("Combat", "kite", $"'{target.Name}' has {neighbours.Count} idle neighbour(s) -> pulling it from {_kiteSpot}");
+            Diag("Combat", "kite", $"'{target.Name}' has {neighbours} idle neighbour(s) -> pulling it from "
+                + (_kiteSpot == me.Position ? "here" : $"{_kiteSpot} ({Vector3.Distance(me.Position, _kiteSpot):F0}y away)"));
         }
 
         if (now - _kiteStartMs > KiteTimeoutMs
@@ -1951,7 +2022,7 @@ public sealed unsafe class FarmingController
             return false;
         }
 
-        // GET TO THE SPOT.
+        // GET TO THE SPOT (if we aren't pulling from where we stood).
         if (Vector2.Distance(Flat(me.Position), Flat(_kiteSpot)) > KiteSpotReach)
         {
             StatusText = $"Kiting {target.Name} (moving to pull spot)";
@@ -2737,6 +2808,7 @@ public sealed unsafe class FarmingController
         _ringMovedFollow = false;
         _fateDropoff = null;
         _climbingOut = false;
+        _dropoffSafetyChecked = false;
         _travelProgress.Reset();
         _dropoffRerolls = 0;
         _dismountSinceMs = 0;

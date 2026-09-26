@@ -16,8 +16,20 @@ public enum PullStyle
 /// <summary>Target choice for the Safe pull style. Pure, so it can be tested without the game.</summary>
 public static class SafePull
 {
-    /// <summary>Idle hostiles this close to a mob are assumed to join in when we engage it.</summary>
-    public const float CrowdRadius = 15f;
+    /// <summary>
+    /// Idle hostiles this close to a mob (or to where we stand) are assumed to join in. 20y: a Wild
+    /// Ibruq in Yak T'el aggroed from over 21y away, so 15y was too trusting.
+    /// </summary>
+    public const float CrowdRadius = 20f;
+
+    /// <summary>Below this share of HP, don't start on anything new; wait for it to come back.</summary>
+    private const float MinHpForNewPull = 0.6f;
+
+    /// <summary>
+    /// Whether we're healthy enough to engage a new mob. Out of combat HP comes back in seconds,
+    /// while starting the next pull at a third of it is how a melee DPS dies to the one after.
+    /// </summary>
+    public static bool MayStartNewPull(float hpFraction) => hpFraction >= MinHpForNewPull;
 
     /// <summary>
     /// What one extra mob joining the fight costs, in yalms of walking. High enough that a lone mob
