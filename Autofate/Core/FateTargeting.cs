@@ -199,7 +199,7 @@ public static unsafe class FateTargeting
 
         // enemies is nearest-first; first one targeting a friendly is the closest active threat.
         foreach (var e in GetFateEnemies(fateId))
-            if (e.TargetObjectId != 0 && friendlyIds.Contains(e.TargetObjectId))
+            if (Logic.ObjectIds.IsSome(e.TargetObjectId) && friendlyIds.Contains(e.TargetObjectId))
                 return e;
         return null;
     }
@@ -277,7 +277,7 @@ public static unsafe class FateTargeting
         foreach (var obj in Svc.Objects)
         {
             if (obj is not IBattleNpc bnpc) continue;
-            if (bnpc.TargetObjectId != 0) continue;
+            if (Logic.ObjectIds.IsSome(bnpc.TargetObjectId)) continue; // fighting someone
             if (!IsAttackableEnemy(bnpc)) continue;
             if (Vector3.DistanceSquared(me.Position, bnpc.Position) > rangeSq) continue;
             result.Add(bnpc);
@@ -359,7 +359,7 @@ public static unsafe class FateTargeting
             var cur = fm->CurrentFate;
             if (cur == null || cur->FateId != fateId) return 0;
             ulong id = cur->MotivationNpc;
-            return id == 0xE0000000 ? 0 : id; // 0xE0000000 = "no NPC"
+            return Logic.ObjectIds.IsSome(id) ? id : 0;
         }
         catch { return 0; }
     }
