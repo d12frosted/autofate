@@ -48,13 +48,25 @@ public class KiteTests
     }
 
     [Fact]
-    public void RetreatSpot_ContinuesAwayFromTheTarget()
+    public void PullsFromWhereWeStand_WhenInRangeAndClear()
     {
         var target = new Vector3(0, 0, 0);
-        var pull = new Vector3(18, 0, 0);
-        var retreat = Kite.RetreatSpot(pull, target);
-        Assert.Equal(18 + Kite.RetreatDistance, retreat.X, 1);
-        Assert.Equal(0, retreat.Z, 1);
+        var others = new[] { new Vector3(-5, 0, 0) };           // the target's pack, behind it
+        Assert.True(Kite.CanPullFromHere(me: new Vector3(16, 0, 0), target, others));
+    }
+
+    [Fact]
+    public void DoesNotPullFromHere_WhenOutOfRange()
+    {
+        Assert.False(Kite.CanPullFromHere(me: new Vector3(25, 0, 0), new Vector3(0, 0, 0), Array.Empty<Vector3>()));
+    }
+
+    [Fact]
+    public void DoesNotPullFromHere_WhenAnotherMobIsCloseToUs()
+    {
+        // In range of the target, but standing next to another idle mob: pulling from here pulls both.
+        var others = new[] { new Vector3(16, 0, 8) };
+        Assert.False(Kite.CanPullFromHere(me: new Vector3(16, 0, 0), new Vector3(0, 0, 0), others));
     }
 
     [Theory]

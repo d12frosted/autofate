@@ -263,6 +263,21 @@ public static unsafe class FateTargeting
         }
     }
 
+    /// <summary>Positions of attackable hostiles within <paramref name="radius"/> of <paramref name="center"/>, busy or not.</summary>
+    public static List<Vector3> GetHostilesAround(Vector3 center, float radius)
+    {
+        var result = new List<Vector3>();
+        var radiusSq = radius * radius;
+        foreach (var obj in Svc.Objects)
+        {
+            if (obj is not IBattleNpc bnpc) continue;
+            if (!IsAttackableEnemy(bnpc)) continue;
+            if (Vector3.DistanceSquared(center, bnpc.Position) > radiusSq) continue;
+            result.Add(bnpc.Position);
+        }
+        return result;
+    }
+
     /// <summary>
     /// Attackable hostiles within <paramref name="maxRange"/> of us that aren't fighting anyone
     /// (no target). Those are the ones that join in when we engage something next to them; a mob

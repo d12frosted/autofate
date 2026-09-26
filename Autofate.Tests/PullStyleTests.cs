@@ -30,8 +30,8 @@ public class PullStyleTests
     public void AvoidsMobStandingInAPack()
     {
         // Mob 2 is closer, but two idle mobs stand right next to it: engaging it pulls all three.
-        var candidates = new[] { M(1, 40), M(2, 20) };
-        var idle = new[] { M(2, 20), M(3, 24), M(4, 22, 3), M(1, 40) };
+        var candidates = new[] { M(1, 60), M(2, 20) };
+        var idle = new[] { M(2, 20), M(3, 24), M(4, 22, 3), M(1, 60) };
         Assert.Equal(1UL, SafePull.PickTarget(Vector3.Zero, candidates, idle));
     }
 
@@ -50,6 +50,19 @@ public class PullStyleTests
         var idle = new[] { M(3, 22), M(4, 58), M(5, 62), M(6, 61, 2) };
         Assert.Equal(1UL, SafePull.PickTarget(Vector3.Zero, candidates, idle));
     }
+
+    [Fact]
+    public void CrowdRadius_CoversObservedAggroRange()
+        // A Wild Ibruq in Yak T'el aggroed from over 21y; 15y missed it.
+        => Assert.True(SafePull.CrowdRadius >= 20f);
+
+    [Theory]
+    [InlineData(1.0f, true)]
+    [InlineData(0.6f, true)]
+    [InlineData(0.59f, false)]
+    [InlineData(0.2f, false)]
+    public void NewPulls_WaitForHp(float hp, bool expected)
+        => Assert.Equal(expected, SafePull.MayStartNewPull(hp));
 
     [Fact]
     public void NoCandidates_ReturnsNull()

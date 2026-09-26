@@ -3,8 +3,8 @@ using System.Numerics;
 namespace Autofate.Logic;
 
 /// <summary>
-/// Geometry for the Safe style's kite: pull a mob out of its pack from range and fight it away from
-/// its neighbours, instead of walking into the pack to hit it. Pure; the controller drives it.
+/// Geometry for the Safe style's kite: pull a mob out of its pack from range and let it come to us,
+/// instead of walking into the pack to hit it. Pure; the controller drives it.
 /// </summary>
 public static class Kite
 {
@@ -14,18 +14,15 @@ public static class Kite
     /// </summary>
     public const float PullRange = 18f;
 
-    /// <summary>How far we want to stay from the target's idle neighbours (the same radius Safe counts a crowd in).</summary>
+    /// <summary>How far we want to stay from every idle hostile besides the target (the radius Safe counts a crowd in).</summary>
     public const float SafeGap = SafePull.CrowdRadius;
-
-    /// <summary>How much further melee jobs back off after the pull, so the mob comes to us away from its pack.</summary>
-    public const float RetreatDistance = 12f;
 
     /// <summary>Candidate directions around the target.</summary>
     private const int Directions = 24;
 
     /// <summary>
     /// Where to stand to pull <paramref name="target"/>: <see cref="PullRange"/> from it, at least
-    /// <see cref="SafeGap"/> from each of its idle <paramref name="neighbours"/>, and of those the
+    /// <see cref="SafeGap"/> from each idle hostile in <paramref name="neighbours"/>, and of those the
     /// spot closest to us. When no spot clears every neighbour, the one furthest from the nearest
     /// neighbour. Horizontal geometry; the spot takes the target's height (the caller snaps it to
     /// the floor).
@@ -59,13 +56,17 @@ public static class Kite
         return bestSafe ?? bestOpen;
     }
 
-    /// <summary>Past the pull spot, straight away from the target: where melee jobs wait for the pulled mob.</summary>
-    public static Vector3 RetreatSpot(Vector3 pullSpot, Vector3 target)
+    /// <summary>
+    /// Can we pull <paramref name="target"/> from where we stand: within <see cref="PullRange"/> of
+    /// it, and <see cref="SafeGap"/> clear of every <paramref name="others"/> (the idle hostiles
+    /// besides the target)? Then we don't move at all, which is the whole point of kiting.
+    /// </summary>
+    public static bool CanPullFromHere(Vector3 me, Vector3 target, IReadOnlyList<Vector3> others)
     {
-        var away = new Vector2(pullSpot.X - target.X, pullSpot.Z - target.Z);
-        if (away.LengthSquared() < 0.01f) away = Vector2.UnitX;
-        away = Vector2.Normalize(away) * RetreatDistance;
-        return new Vector3(pullSpot.X + away.X, pullSpot.Y, pullSpot.Z + away.Y);
+        if (Flat(me, target) > PullRange) return false;
+        foreach (var o in others)
+            if (Flat(me, o) < SafeGap) return false;
+        return true;
     }
 
     /// <summary>

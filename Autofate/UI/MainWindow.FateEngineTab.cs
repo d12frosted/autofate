@@ -70,9 +70,10 @@ public sealed partial class MainWindow
 
         var style = C.PullStyle;
         if (ImGuiEx.EnumCombo("Pull style", ref style, PullStyleNames)) { C.PullStyle = style; Save(); }
-        ImGui.SameLine(); Help("Safe: one mob at a time. Whatever is hitting you is fought first, then the mob with the "
-            + "fewest idle enemies around it, so you don't walk into packs. A mob standing with others is pulled from 18y "
-            + "with a ranged attack and fought away from its pack (Monk has none and walks in). Slower, but melee DPS and healers survive it.\n\n"
+        ImGui.SameLine(); Help("Safe: one mob at a time, and mobs come to you. Lands away from mobs, picks the mob with the "
+            + "fewest idle enemies around it, pulls it from range with the job's ranged attack when it has company, and "
+            + "waits for it instead of walking into its pack. Anything on you is fought first; no new pull while still "
+            + "in combat or below 60% HP. Slower, but melee DPS and healers survive it.\n\n"
             + "Yolo: mass pull. Gathers mobs up to the cap below and AOEs them down. Fast, for tanks and parties.\n\n"
             + "Auto: Yolo on a tank, Safe on everything else.");
         var effective = Core.FateTargeting.EffectivePullStyle(C);
