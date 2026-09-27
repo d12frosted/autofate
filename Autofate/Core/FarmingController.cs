@@ -1895,8 +1895,13 @@ public sealed unsafe class FarmingController
                 if (now - _safeHoldSinceMs < SafeHoldMaxMs)
                 {
                     Diag("Combat", "safehold", $"not starting a new pull: {why}");
-                    Navigator.Stop();
-                    StatusText = $"Safe: waiting ({why})";
+                    if (me != null && TickEvade(me))
+                        StatusText = $"Safe: waiting ({why}), stepping aside";
+                    else
+                    {
+                        Navigator.Stop();
+                        StatusText = $"Safe: waiting ({why})";
+                    }
                     _safeHolding = true;
                     return null;
                 }
@@ -1981,6 +1986,7 @@ public sealed unsafe class FarmingController
         _kiteAtSpotMs = 0;
         _kiteBlockedSinceMs = 0;
         _approachId = 0;
+        _evadeSpot = null;
     }
 
     /// <summary>
@@ -2002,6 +2008,7 @@ public sealed unsafe class FarmingController
             if (dist <= engageRange) { _approachId = 0; return false; }
             if (!melee && dist <= RangedFightRange)
             {
+                if (TickEvade(me)) { StatusText = $"Fighting {target.Name} from range (stepping aside)"; return true; }
                 Navigator.Stop();
                 StatusText = $"Fighting {target.Name} from range";
                 return true;
@@ -2017,6 +2024,7 @@ public sealed unsafe class FarmingController
                 Diag("Combat", "kite", $"'{target.Name}' is on us but isn't coming ({dist:F0}y) -> walking to it");
                 return false;
             }
+            if (TickEvade(me)) { StatusText = $"Kiting {target.Name} (stepping aside while it comes)"; return true; }
             Navigator.Stop();
             StatusText = $"Kiting {target.Name} (letting it come, {dist:F0}y)";
             return true;
@@ -2094,6 +2102,38 @@ public sealed unsafe class FarmingController
             if (melee) FateTargeting.TryUseAction(Logic.Kite.RangedPullAction(job.Id)!.Value, target);
             else FateTargeting.StartAutoAttack(target);
         }
+        return true;
+    }
+
+    // Stepping aside while we wait (Logic.ThreatMap.EvadeSpot): where to, and until when we keep going.
+    private Vector3? _evadeSpot;
+    private long _evadeUntilMs;
+    private const long EvadeMaxMs = 4000;
+
+    /// <summary>
+    /// Safe, while standing and waiting (for a pulled mob, or before the next pull): step aside from
+    /// an idle mob heading our way. Once we pick a spot we walk it out (or give it EvadeMaxMs) instead
+    /// of re-deciding every tick. Returns true while stepping. Never called mid-fight.
+    /// </summary>
+    private bool TickEvade(Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter me)
+    {
+        var now = Environment.TickCount64;
+        if (_evadeSpot is { } going)
+        {
+            if (Vector2.Distance(Flat(me.Position), Flat(going)) <= KiteSpotReach || now > _evadeUntilMs)
+                _evadeSpot = null;
+            else
+            {
+                Navigator.MoveTo(C, going, KiteSpotReach * 0.75f, allowMount: false);
+                return true;
+            }
+        }
+        if (!EzThrottler.Throttle("AF_EvadeCheck", 500)) return false;
+        if (Logic.ThreatMap.EvadeSpot(me.Position, _mobs.Mobs) is not { } spot) return false;
+        _evadeSpot = NavmeshIPC.PointOnFloor(spot + new Vector3(0, 10, 0), true, 5f) ?? spot;
+        _evadeUntilMs = now + EvadeMaxMs;
+        Diag("Combat", "evade", $"idle mob heading our way (clearance {Logic.ThreatMap.Clearance(me.Position, _mobs.Mobs):F0}y) -> stepping to {_evadeSpot}");
+        Navigator.MoveTo(C, _evadeSpot.Value, KiteSpotReach * 0.75f, allowMount: false);
         return true;
     }
 

@@ -42,6 +42,7 @@ Collection modes (Atma/Demiatma/Luminous/Memories) track the required items in y
     - A mob on its own is walked up to. A mob with company is kited: pulled with the job's ranged attack (Unmend, Piercing Talon, Shield Lob, ...; ranged jobs and healers just attack) from where you stand if it's within 18y and nothing else is within 20y of you, otherwise from a spot 18y from it, clear of every other idle mob. Then you wait for it to come.
     - Anything already on you is fought first, and also left to come to you; you only walk to it if it stops closing in for 3s (ranged mobs). Ranged jobs and healers fight from where they stand.
     - No new pull while you're still in combat (mobs your AOE clipped take a moment to turn on you), below 60% HP, or while mobs nearby are still running around (fresh spawns), for up to 10s. A fight in progress always continues.
+    - While it stands and waits (for a pulled mob to arrive, or before the next pull), an idle mob wandering its way makes it step aside to a nearby spot that stays clear. Never in the middle of a fight.
     - If there's no clear way to pull a mob (every spot means walking through its pack), it waits for the mobs to move, and after 6s tries another mob instead.
     - Monk has no ranged attack and walks in; a pull that doesn't land within 6s falls back to walking in too.
   - **Yolo** is mass pull, with a configurable enemy cap (can only adhere to this as best as reasonably possible).

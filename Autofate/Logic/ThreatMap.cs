@@ -156,4 +156,38 @@ public static class ThreatMap
         }
         return n;
     }
+
+    /// <summary>How far we consider stepping aside, and how much better a step must be to bother.</summary>
+    private static readonly float[] EvadeSteps = { 8f, 14f };
+    private const int EvadeDirections = 16;
+    private const float EvadeMinGain = 3f;
+
+    /// <summary>
+    /// While we stand and wait (for a pulled mob, or before the next pull): if an idle mob is heading
+    /// within <see cref="AggroRadius"/> of us, the nearby spot whose walk and wait keep the most
+    /// room. Null when we're fine where we are, or when no step is meaningfully better (mobs
+    /// all around: moving would only be dancing). Mobs already on us don't count: them coming to us
+    /// is the point.
+    /// </summary>
+    public static Vector3? EvadeSpot(Vector3 me, IReadOnlyList<TrackedMob> mobs)
+    {
+        var here = Clearance(me, mobs);
+        if (here >= AggroRadius) return null;
+
+        Vector3? best = null;
+        var bestGap = here + EvadeMinGain;
+        foreach (var r in EvadeSteps)
+        {
+            for (var i = 0; i < EvadeDirections; i++)
+            {
+                var angle = i * MathF.Tau / EvadeDirections;
+                var spot = new Vector3(me.X + r * MathF.Cos(angle), me.Y, me.Z + r * MathF.Sin(angle));
+                var gap = PathClearance(me, spot, mobs);
+                if (gap < bestGap) continue;
+                bestGap = gap;
+                best = spot;
+            }
+        }
+        return best;
+    }
 }
