@@ -37,10 +37,12 @@ Collection modes (Atma/Demiatma/Luminous/Memories) track the required items in y
 - **Auto level-sync** to the target fate: Sync upon arrival to fate so as not to accidentally sync with fates along the path.
 - **Pull style**: Safe, Yolo, or Auto (the default: Yolo on a tank, Safe on everything else).
   - **Safe** fights one mob at a time, and lets mobs come to you instead of walking into their pack.
+    - It tracks the mobs around you with their movement, and judges spots and walks by where mobs will be over the next few seconds, not just where they are now. The spot it pulls from, and the way there, are re-checked every second while it gets there.
     - It lands away from the fate's mobs, and picks the mob with the fewest idle enemies within 20y, weighed against distance.
     - A mob on its own is walked up to. A mob with company is kited: pulled with the job's ranged attack (Unmend, Piercing Talon, Shield Lob, ...; ranged jobs and healers just attack) from where you stand if it's within 18y and nothing else is within 20y of you, otherwise from a spot 18y from it, clear of every other idle mob. Then you wait for it to come.
     - Anything already on you is fought first, and also left to come to you; you only walk to it if it stops closing in for 3s (ranged mobs). Ranged jobs and healers fight from where they stand.
-    - No new pull while you're still in combat (mobs your AOE clipped take a moment to turn on you) or below 60% HP, for up to 10s.
+    - No new pull while you're still in combat (mobs your AOE clipped take a moment to turn on you), below 60% HP, or while mobs nearby are still running around (fresh spawns), for up to 10s. A fight in progress always continues.
+    - If there's no clear way to pull a mob (every spot means walking through its pack), it waits for the mobs to move, and after 6s tries another mob instead.
     - Monk has no ranged attack and walks in; a pull that doesn't land within 6s falls back to walking in too.
   - **Yolo** is mass pull, with a configurable enemy cap (can only adhere to this as best as reasonably possible).
 - **Mass-pull stays local.** With nothing on us we walk to the nearest mob, however far. Once something is on us, only mobs within the pull radius (20y by default) get pulled; the rest wait until the pile is dead. Walking further would drag the pile along until it drops aggro, and then we'd walk back for it.

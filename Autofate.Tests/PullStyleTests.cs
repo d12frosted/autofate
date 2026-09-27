@@ -17,12 +17,13 @@ public class PullStyleTests
     public void Resolve(PullStyle chosen, byte role, PullStyle expected)
         => Assert.Equal(expected, SafePull.Resolve(chosen, role));
 
-    private static SafePull.Mob M(ulong id, float x, float z = 0) => new(id, new Vector3(x, 0, z));
+    private static TrackedMob M(ulong id, float x, float z = 0, float vx = 0)
+        => new(id, new Vector3(x, 0, z), new Vector3(vx, 0, 0), MobState.Idle);
 
     [Fact]
     public void PicksNearest_WhenNothingIsAround()
     {
-        var pick = SafePull.PickTarget(Vector3.Zero, new[] { M(1, 30), M(2, 20) }, idleHostiles: Array.Empty<SafePull.Mob>());
+        var pick = SafePull.PickTarget(Vector3.Zero, new[] { M(1, 30), M(2, 20) }, mobs: Array.Empty<TrackedMob>());
         Assert.Equal(2UL, pick);
     }
 
@@ -52,6 +53,15 @@ public class PullStyleTests
     }
 
     [Fact]
+    public void AvoidsAMobThatAMobIsWalkingTowards()
+    {
+        // Both candidates stand alone right now, but a wanderer is heading for the closer one.
+        var candidates = new[] { M(1, -40), M(2, 20) };
+        var mobs = new[] { M(1, -40), M(2, 20), M(3, 50, vx: -5) };
+        Assert.Equal(1UL, SafePull.PickTarget(Vector3.Zero, candidates, mobs));
+    }
+
+    [Fact]
     public void CrowdRadius_CoversObservedAggroRange()
         // A Wild Ibruq in Yak T'el aggroed from over 21y; 15y missed it.
         => Assert.True(SafePull.CrowdRadius >= 20f);
@@ -66,5 +76,5 @@ public class PullStyleTests
 
     [Fact]
     public void NoCandidates_ReturnsNull()
-        => Assert.Null(SafePull.PickTarget(Vector3.Zero, Array.Empty<SafePull.Mob>(), Array.Empty<SafePull.Mob>()));
+        => Assert.Null(SafePull.PickTarget(Vector3.Zero, Array.Empty<TrackedMob>(), Array.Empty<TrackedMob>()));
 }

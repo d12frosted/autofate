@@ -413,6 +413,17 @@ public sealed unsafe class FarmingController
         }
         if (_rotationActive) IPCManager.KeepRotationAlive(C);
 
+        // Threat map: follow hostiles around us so Safe decisions can see where they're heading.
+        if (Player.Object is { } meT && EzThrottler.Throttle("AF_MobTracker", 250))
+        {
+            var chocoId = FateTargeting.GetChocoboId();
+            _mobs.Update(Environment.TickCount64, FateTargeting.GetHostileNpcsAround(meT.Position, MobTrackRange)
+                .Select(b => new Logic.MobTracker.Sample(b.GameObjectId, b.Position,
+                    FateTargeting.IsAggroedOnUs(b, meT.GameObjectId, chocoId) ? Logic.MobState.OnUs
+                    : Logic.ObjectIds.IsSome(b.TargetObjectId) ? Logic.MobState.Busy
+                    : Logic.MobState.Idle)));
+        }
+
         // Death report material: a sample a second of HP and who's on us while fighting.
         if (InCombat() && Player.Object is { MaxHp: > 0 } meNow && EzThrottler.Throttle("AF_CombatTrail", 1000))
             _combatTrail.Add(Environment.TickCount64, (float)meNow.CurrentHp / meNow.MaxHp,
@@ -1873,7 +1884,10 @@ public sealed unsafe class FarmingController
         {
             var me = Player.Object;
             var hp = me is { MaxHp: > 0 } ? (float)me.CurrentHp / me.MaxHp : 1f;
-            var why = InCombat() ? "still in combat" : !Logic.SafePull.MayStartNewPull(hp) ? $"HP {hp:P0}" : null;
+            var why = InCombat() ? "still in combat"
+                : !Logic.SafePull.MayStartNewPull(hp) ? $"HP {hp:P0}"
+                : me != null && !Logic.ThreatMap.IsSettled(me.Position, _mobs.Mobs) ? "mobs still moving"
+                : null;
             var now = Environment.TickCount64;
             if (why != null)
             {
@@ -1923,13 +1937,28 @@ public sealed unsafe class FarmingController
     private readonly Logic.CombatTrail _combatTrail = new(CombatTrailMs);
     private const long CombatTrailMs = 15000;
 
+    // Hostiles around us with velocities (Logic.ThreatMap); Safe decides from where they're heading.
+    private readonly Logic.MobTracker _mobs = new();
+    private const float MobTrackRange = 60f;
+
+    /// <summary>The tracked view of <paramref name="mob"/>; standing still if the tracker hasn't seen it yet.</summary>
+    private Logic.TrackedMob Tracked(IBattleNpc mob)
+        => _mobs.Mobs.FirstOrDefault(m => m.Id == mob.GameObjectId) is { Id: not 0 } t
+            ? t
+            : new Logic.TrackedMob(mob.GameObjectId, mob.Position, Vector3.Zero, Logic.MobState.Idle);
+
     private ulong _kiteTargetId;
     private Vector3 _kiteSpot;
     // Safe hold (see SelectCombatTarget): since when we've been waiting before a new pull, and how long at most.
     private long _safeHoldSinceMs;
     private bool _safeHolding; // this tick's "no target" is the Safe hold, not an empty fate
     private const long SafeHoldMaxMs = 10000;
-    private long _kiteStartMs, _kiteAtSpotMs;
+    private long _kiteStartMs, _kiteAtSpotMs, _kiteBlockedSinceMs;
+    // Mobs we found no clear way to pull, and until when Safe leaves them alone.
+    private readonly Dictionary<ulong, long> _kiteBlockedUntil = new();
+    // How long we wait for mobs to clear a way before trying another mob, and how long we skip it.
+    private const long KiteBlockedWaitMs = 6000;
+    private const long KiteBlockedSkipMs = 15000;
     private readonly HashSet<ulong> _kiteGaveUp = new(); // mobs we couldn't kite this fate: walk in
     // Getting to the spot and pulling shouldn't take longer than this; past it we walk in instead.
     private const long KiteTimeoutMs = 30000;
@@ -1950,6 +1979,7 @@ public sealed unsafe class FarmingController
         _kiteTargetId = 0;
         _kiteStartMs = 0;
         _kiteAtSpotMs = 0;
+        _kiteBlockedSinceMs = 0;
         _approachId = 0;
     }
 
@@ -1994,36 +2024,48 @@ public sealed unsafe class FarmingController
         _approachId = 0;
 
         if (_kiteGaveUp.Contains(target.GameObjectId)) return false;
+        var mobs = _mobs.Mobs;
+        var tracked = Tracked(target);
 
-        // NEW TARGET: kite only if it has idle company that would join in.
+        // NEW TARGET: kite only if idle mobs are at it, or heading there (Logic.ThreatMap.Crowd).
         if (_kiteTargetId != target.GameObjectId)
         {
-            var others = FateTargeting.GetIdleHostiles(dist + Logic.SafePull.CrowdRadius * 2)
-                .Where(h => h.GameObjectId != target.GameObjectId)
-                .Select(h => h.Position)
-                .ToList();
-            var neighbours = others.Count(o => Vector3.Distance(o, target.Position) <= Logic.SafePull.CrowdRadius);
-            if (neighbours == 0) return false; // on its own: just go hit it
-            var pullAction = Logic.Kite.RangedPullAction(job.Id);
-            if (melee && pullAction == null)
+            var crowd = Logic.ThreatMap.Crowd(tracked, mobs);
+            if (crowd == 0) return false; // on its own, and nobody's coming: just go hit it
+            if (melee && Logic.Kite.RangedPullAction(job.Id) == null)
             {
                 _kiteGaveUp.Add(target.GameObjectId); // e.g. Monk: nothing to pull with
                 return false;
             }
-
-            if (Logic.Kite.CanPullFromHere(me.Position, target.Position, others))
-                _kiteSpot = me.Position;
-            else
-            {
-                var spot = Logic.Kite.PullSpot(me.Position, target.Position, others);
-                // Put it on the floor we'll be walking on (the target's height is only a guess there).
-                _kiteSpot = NavmeshIPC.PointOnFloor(spot + new Vector3(0, 10, 0), true, 5f) ?? spot;
-            }
             _kiteTargetId = target.GameObjectId;
             _kiteStartMs = now;
             _kiteAtSpotMs = 0;
-            Diag("Combat", "kite", $"'{target.Name}' has {neighbours} idle neighbour(s) -> pulling it from "
-                + (_kiteSpot == me.Position ? "here" : $"{_kiteSpot} ({Vector3.Distance(me.Position, _kiteSpot):F0}y away)"));
+            _kiteBlockedSinceMs = 0;
+            PickKiteSpot(me, tracked, mobs, $"{crowd} idle mob(s) at or heading to it");
+        }
+        // RE-CHECK every second: mobs wander, and a spot or a way there that was clear can stop being.
+        else if (EzThrottler.Throttle("AF_KiteRecheck", 1000)
+                 && (_kiteBlockedSinceMs != 0 || !Logic.Kite.SpotStillSafe(me.Position, _kiteSpot, tracked, mobs)))
+        {
+            PickKiteSpot(me, tracked, mobs, _kiteBlockedSinceMs != 0 ? "looking for a clear way again" : "a mob is heading onto our way");
+        }
+
+        // NO CLEAR WAY: stand still and let the mobs move; give up on this one after a while and let
+        // Safe pick another (it skips blocked mobs for a bit). Never walk through a pack to pull.
+        if (_kiteBlockedSinceMs != 0)
+        {
+            Navigator.Stop();
+            if (now - _kiteBlockedSinceMs > KiteBlockedWaitMs)
+            {
+                Diag("Combat", "kite", $"no clear way to pull '{target.Name}' for {KiteBlockedWaitMs / 1000}s -> trying another mob");
+                _kiteBlockedUntil[target.GameObjectId] = now + KiteBlockedSkipMs;
+                _engagedTargetId = 0; // drop the sticky target so the next pick can move on
+                ClearKite();
+                StatusText = $"Kiting: no clear way to {target.Name}";
+                return true;
+            }
+            StatusText = $"Kiting {target.Name} (waiting for a clear way)";
+            return true;
         }
 
         if (now - _kiteStartMs > KiteTimeoutMs
@@ -2055,6 +2097,36 @@ public sealed unsafe class FarmingController
         return true;
     }
 
+    /// <summary>
+    /// Choose where to pull the kite target from: right here if we're in range and nothing is coming
+    /// our way, else the clear spot Logic.Kite.PullSpot finds. No clear spot means blocked.
+    /// </summary>
+    private void PickKiteSpot(Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter me, Logic.TrackedMob target,
+                              IReadOnlyList<Logic.TrackedMob> mobs, string why)
+    {
+        if (Logic.Kite.CanPullFromHere(me.Position, target, mobs))
+        {
+            _kiteSpot = me.Position;
+            _kiteBlockedSinceMs = 0;
+            Diag("Combat", "kite", $"pulling {target.Id} from here ({why})");
+            return;
+        }
+        var (spot, clear) = Logic.Kite.PullSpot(me.Position, target, mobs);
+        if (!clear)
+        {
+            if (_kiteBlockedSinceMs == 0)
+            {
+                _kiteBlockedSinceMs = Environment.TickCount64;
+                Diag("Combat", "kite", $"no clear spot to pull {target.Id} from ({why}) -> waiting for mobs to move");
+            }
+            return;
+        }
+        _kiteBlockedSinceMs = 0;
+        // Put it on the floor we'll be walking on (the target's height is only a guess there).
+        _kiteSpot = NavmeshIPC.PointOnFloor(spot + new Vector3(0, 10, 0), true, 5f) ?? spot;
+        Diag("Combat", "kite", $"pulling {target.Id} from {_kiteSpot} ({Vector3.Distance(me.Position, _kiteSpot):F0}y away; {why})");
+    }
+
     /// <summary>Is this mob targeting us or our chocobo?</summary>
     private static bool IsOnUs(IBattleNpc mob)
         => Player.Object is { } me && FateTargeting.IsAggroedOnUs(mob, me.GameObjectId, FateTargeting.GetChocoboId());
@@ -2071,17 +2143,20 @@ public sealed unsafe class FarmingController
     {
         var me = Player.Object;
         if (me == null) return null;
-        var fateMobs = FateTargeting.GetFateEnemies(_targetFateId);
+        var now = Environment.TickCount64;
+        // Mobs we couldn't find a clear way to pull stay out of the running for a bit.
+        var fateMobs = FateTargeting.GetFateEnemies(_targetFateId)
+            .Where(e => !(_kiteBlockedUntil.TryGetValue(e.GameObjectId, out var until) && until > now))
+            .ToList();
         if (fateMobs.Count == 0) return null;
-        var candidates = fateMobs.Select(e => new Logic.SafePull.Mob(e.GameObjectId, e.Position)).ToList();
-        // Only hostiles near some candidate can matter; the furthest candidate plus the crowd radius bounds it.
-        var reach = fateMobs.Max(e => Vector3.Distance(me.Position, e.Position)) + Logic.SafePull.CrowdRadius;
-        var idle = FateTargeting.GetIdleHostiles(reach)
-            .Select(e => new Logic.SafePull.Mob(e.GameObjectId, e.Position)).ToList();
-        var pickId = Logic.SafePull.PickTarget(me.Position, candidates, idle);
+        var mobs = _mobs.Mobs;
+        var candidates = fateMobs.Select(Tracked).ToList();
+        var pickId = Logic.SafePull.PickTarget(me.Position, candidates, mobs);
         var pick = fateMobs.FirstOrDefault(e => e.GameObjectId == pickId);
         if (pick != null && pick.GameObjectId != _engagedTargetId)
-            Diag("Combat", "safe", $"next: '{pick.Name}' ({Vector3.Distance(me.Position, pick.Position):F0}y, {idle.Count} idle hostiles around the fate)");
+            Diag("Combat", "safe", $"next: '{pick.Name}' ({Vector3.Distance(me.Position, pick.Position):F0}y, "
+                + $"{Logic.ThreatMap.Crowd(Tracked(pick), mobs)} idle mob(s) at or heading to it, "
+                + $"{mobs.Count(m => m.State == Logic.MobState.Idle)} idle around)");
         return pick;
     }
 
@@ -2809,6 +2884,7 @@ public sealed unsafe class FarmingController
         _strayWrittenOff.Clear();
         ClearKite();
         _kiteGaveUp.Clear();
+        _kiteBlockedUntil.Clear();
         _collectInteractObjId = 0;
         _collectInteractCooldownMs = 0;
         _collectShedPoint = null;

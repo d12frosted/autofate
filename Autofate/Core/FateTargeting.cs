@@ -265,36 +265,18 @@ public static unsafe class FateTargeting
 
     /// <summary>Positions of attackable hostiles within <paramref name="radius"/> of <paramref name="center"/>, busy or not.</summary>
     public static List<Vector3> GetHostilesAround(Vector3 center, float radius)
+        => GetHostileNpcsAround(center, radius).Select(b => b.Position).ToList();
+
+    /// <summary>Attackable hostiles within <paramref name="radius"/> of <paramref name="center"/>, busy or not.</summary>
+    public static List<IBattleNpc> GetHostileNpcsAround(Vector3 center, float radius)
     {
-        var result = new List<Vector3>();
+        var result = new List<IBattleNpc>();
         var radiusSq = radius * radius;
         foreach (var obj in Svc.Objects)
         {
             if (obj is not IBattleNpc bnpc) continue;
             if (!IsAttackableEnemy(bnpc)) continue;
             if (Vector3.DistanceSquared(center, bnpc.Position) > radiusSq) continue;
-            result.Add(bnpc.Position);
-        }
-        return result;
-    }
-
-    /// <summary>
-    /// Attackable hostiles within <paramref name="maxRange"/> of us that aren't fighting anyone
-    /// (no target). Those are the ones that join in when we engage something next to them; a mob
-    /// busy with another player won't.
-    /// </summary>
-    public static List<IBattleNpc> GetIdleHostiles(float maxRange)
-    {
-        var result = new List<IBattleNpc>();
-        var me = Player.Object;
-        if (me == null) return result;
-        var rangeSq = maxRange * maxRange;
-        foreach (var obj in Svc.Objects)
-        {
-            if (obj is not IBattleNpc bnpc) continue;
-            if (Logic.ObjectIds.IsSome(bnpc.TargetObjectId)) continue; // fighting someone
-            if (!IsAttackableEnemy(bnpc)) continue;
-            if (Vector3.DistanceSquared(me.Position, bnpc.Position) > rangeSq) continue;
             result.Add(bnpc);
         }
         return result;
