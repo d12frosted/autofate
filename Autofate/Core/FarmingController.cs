@@ -411,6 +411,7 @@ public sealed unsafe class FarmingController
             }
             if (_rotationActive && _strayTargetId == 0) IPCManager.ApplyBmrFateTargeting(C);
         }
+        if (_rotationActive) IPCManager.KeepRotationAlive(C);
 
         // Always-on maintenance that can run in parallel with farming.
         ConsumableManager.Tick(C);

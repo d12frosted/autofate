@@ -134,6 +134,17 @@ public static class IPCManager
             WrathComboIPC.Disable();
     }
 
+    /// <summary>
+    /// Call every tick while the rotation should be running: re-takes control from a backend that
+    /// dropped us on its own (Wrath suspends leases now and then). Throttled.
+    /// </summary>
+    public static void KeepRotationAlive(Configuration c)
+    {
+        if (c.RotationBackend != CombatBackend.WrathCombo) return;
+        if (!ECommons.Throttlers.EzThrottler.Throttle("AF_RotationKeepAlive", 3000)) return;
+        WrathComboIPC.KeepAlive();
+    }
+
     /// <summary>Stop ONLY the damage rotation, leaving BMR's AI (movement / AOE dodging) alone.</summary>
     public static void StopRotation(Configuration c)
     {

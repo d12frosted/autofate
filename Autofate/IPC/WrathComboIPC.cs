@@ -114,6 +114,36 @@ public static class WrathComboIPC
         }
     }
 
+    /// <summary>
+    /// Keep our control of Wrath's auto-rotation while we want it. Wrath drops every lease on its own
+    /// now and then ("Suspending all leases" in its log: it does that whenever it sees the job change,
+    /// including the player briefly being unavailable), and doesn't always tell us: we then kept a
+    /// dead lease and the rotation silently stopped mid-fight. Re-asserting auto-rotation on our lease
+    /// is cheap and answers InvalidLease once Wrath has forgotten it, so we take it again then.
+    /// Call periodically while the rotation should be running.
+    /// </summary>
+    public static void KeepAlive()
+    {
+        if (!IsInstalled || !_initialized) return;
+        if (_lease is { } lease)
+        {
+            SetResult result;
+            try { result = SetAutoRotationState(lease, true); }
+            catch (Exception e)
+            {
+                Svc.Log.Verbose($"[WrathCombo] keep-alive failed: {e.Message}");
+                return;
+            }
+            if (result is not (SetResult.InvalidLease or SetResult.BlacklistedLease)) return;
+            Svc.Log.Warning($"[WrathCombo] Wrath dropped our lease ({result}); taking it again.");
+            _lease = null;
+        }
+        Enable();
+    }
+
+    /// <summary>Wrath told us it cancelled our lease: forget it, so the next Enable/KeepAlive registers anew.</summary>
+    internal static void OnLeaseCancelled() => _lease = null;
+
     public static void Disable()
     {
         if (_lease == null) return;
@@ -151,5 +181,6 @@ public class WrathComboCallbackReceiver
     public void WrathComboCallback(int reason, string additionalInfo)
     {
         Svc.Log.Warning($"[WrathCombo] Lease cancelled (reason {reason}): {additionalInfo}");
+        WrathComboIPC.OnLeaseCancelled();
     }
 }
