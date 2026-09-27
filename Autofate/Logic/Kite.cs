@@ -21,27 +21,28 @@ public static class Kite
     private const int Directions = 24;
 
     /// <summary>
-    /// Where to stand to pull <paramref name="target"/>: <see cref="PullRange"/> from it, at least
-    /// <see cref="SafeGap"/> from each idle hostile in <paramref name="neighbours"/>, and of those the
-    /// spot closest to us. When no spot clears every neighbour, the one furthest from the nearest
-    /// neighbour. Horizontal geometry; the spot takes the target's height (the caller snaps it to
-    /// the floor).
+    /// Where to stand to pull <paramref name="target"/>: <see cref="PullRange"/> from it, with the
+    /// walk there and the wait there clear of every other idle mob by <see cref="SafeGap"/>, where
+    /// they'll be as well as where they are (<see cref="ThreatMap.PathClearance"/>). Of those, the
+    /// spot closest to us, with Clear = true. When none is clear (typically: we're on the pack's
+    /// side and every clear spot means walking through it; vnav takes the short way, it doesn't
+    /// walk around mobs), the one that keeps the most room, with Clear = false, and the caller
+    /// should wait for the mobs to move rather than go. Horizontal geometry; the spot takes the
+    /// target's height (the caller snaps it to the floor).
     /// </summary>
-    public static Vector3 PullSpot(Vector3 me, Vector3 target, IReadOnlyList<Vector3> neighbours)
+    public static (Vector3 Spot, bool Clear) PullSpot(Vector3 me, TrackedMob target, IReadOnlyList<TrackedMob> mobs)
     {
         Vector3? bestSafe = null;
         var bestSafeDist = float.MaxValue;
-        var bestOpen = target;
+        var bestOpen = target.Position;
         var bestOpenGap = float.MinValue;
 
         for (var i = 0; i < Directions; i++)
         {
             var angle = i * MathF.Tau / Directions;
-            var spot = new Vector3(target.X + PullRange * MathF.Cos(angle), target.Y, target.Z + PullRange * MathF.Sin(angle));
-
-            var gap = float.MaxValue;
-            foreach (var n in neighbours) gap = MathF.Min(gap, Flat(spot, n));
-
+            var spot = new Vector3(target.Position.X + PullRange * MathF.Cos(angle), target.Position.Y,
+                                   target.Position.Z + PullRange * MathF.Sin(angle));
+            var gap = ThreatMap.PathClearance(me, spot, mobs, exclude: target.Id);
             if (gap >= SafeGap)
             {
                 var d = Flat(spot, me);
@@ -53,21 +54,25 @@ public static class Kite
                 bestOpen = spot;
             }
         }
-        return bestSafe ?? bestOpen;
+        return bestSafe is { } safe ? (safe, true) : (bestOpen, false);
     }
 
     /// <summary>
     /// Can we pull <paramref name="target"/> from where we stand: within <see cref="PullRange"/> of
-    /// it, and <see cref="SafeGap"/> clear of every <paramref name="others"/> (the idle hostiles
-    /// besides the target)? Then we don't move at all, which is the whole point of kiting.
+    /// it, and no other idle mob coming within <see cref="SafeGap"/> of us while we wait? Then we
+    /// don't move at all, which is the whole point of kiting.
     /// </summary>
-    public static bool CanPullFromHere(Vector3 me, Vector3 target, IReadOnlyList<Vector3> others)
-    {
-        if (Flat(me, target) > PullRange) return false;
-        foreach (var o in others)
-            if (Flat(me, o) < SafeGap) return false;
-        return true;
-    }
+    public static bool CanPullFromHere(Vector3 me, TrackedMob target, IReadOnlyList<TrackedMob> mobs)
+        => Flat(me, target.Position) <= PullRange
+           && ThreatMap.Clearance(me, mobs, exclude: target.Id) >= SafeGap;
+
+    /// <summary>
+    /// Is the spot we're walking to, and the rest of the walk, still clear given where mobs are
+    /// heading now? A little slack against <see cref="SafeGap"/>, so a spot doesn't flip back and
+    /// forth on the edge.
+    /// </summary>
+    public static bool SpotStillSafe(Vector3 me, Vector3 spot, TrackedMob target, IReadOnlyList<TrackedMob> mobs)
+        => ThreatMap.PathClearance(me, spot, mobs, exclude: target.Id) >= SafeGap * 0.9f;
 
     /// <summary>
     /// The ranged attack a melee job pulls with (all 20y, learned at 15, Harpe 25y), by ClassJob

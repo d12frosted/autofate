@@ -37,8 +37,6 @@ public static class SafePull
     /// </summary>
     private const float CrowdPenalty = 40f;
 
-    public readonly record struct Mob(ulong Id, Vector3 Position);
-
     /// <summary>
     /// The style to actually use. Auto picks by job role (ClassJob.Role: 1 = tank): a tank can hold
     /// a pile, everyone else dies to one.
@@ -51,26 +49,22 @@ public static class SafePull
 
     /// <summary>
     /// The fate mob to engage next when nothing is on us: the nearest one, penalised for every idle
-    /// hostile standing around it (those would likely join in). <paramref name="candidates"/> are the
-    /// fate's mobs not on us; <paramref name="idleHostiles"/> are hostiles not fighting anyone, fate
-    /// or not, and may include the candidates themselves.
+    /// hostile that is, or is heading, within reach of it (<see cref="ThreatMap.Crowd"/>): those
+    /// would join in. <paramref name="candidates"/> are the fate's mobs not on us;
+    /// <paramref name="mobs"/> is every tracked hostile, candidates included.
     /// </summary>
-    public static ulong? PickTarget(Vector3 me, IReadOnlyList<Mob> candidates, IReadOnlyList<Mob> idleHostiles)
+    public static ulong? PickTarget(Vector3 me, IReadOnlyList<TrackedMob> candidates, IReadOnlyList<TrackedMob> mobs)
     {
-        var radiusSq = CrowdRadius * CrowdRadius;
         ulong? best = null;
         var bestScore = float.MaxValue;
         foreach (var c in candidates)
         {
-            var crowd = 0;
-            foreach (var h in idleHostiles)
-                if (h.Id != c.Id && Vector3.DistanceSquared(h.Position, c.Position) <= radiusSq)
-                    crowd++;
-            var score = Vector3.Distance(me, c.Position) + CrowdPenalty * crowd;
+            var score = Vector3.Distance(me, c.Position) + CrowdPenalty * ThreatMap.Crowd(c, mobs);
             if (score >= bestScore) continue;
             bestScore = score;
             best = c.Id;
         }
         return best;
     }
+
 }
