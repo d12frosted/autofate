@@ -413,6 +413,11 @@ public sealed unsafe class FarmingController
         }
         if (_rotationActive) IPCManager.KeepRotationAlive(C);
 
+        // Death report material: a sample a second of HP and who's on us while fighting.
+        if (InCombat() && Player.Object is { MaxHp: > 0 } meNow && EzThrottler.Throttle("AF_CombatTrail", 1000))
+            _combatTrail.Add(Environment.TickCount64, (float)meNow.CurrentHp / meNow.MaxHp,
+                FateTargeting.GetEnemiesAttackingMe().Select(e => e.Name.TextValue).ToList());
+
         // Always-on maintenance that can run in parallel with farming.
         ConsumableManager.Tick(C);
         // Skip companion maintenance while stabling: the stable routine WITHDRAWS the chocobo, and
@@ -544,6 +549,9 @@ public sealed unsafe class FarmingController
             SetCombatBackend(false);
             State = FarmState.Dead;
             Svc.Log.Warning($"[Autofate] Died (death {Stats.Deaths} this session) — everything parked until we're back up.");
+            // Not behind verbose logging: a death is exactly when this is wanted, and it's one line.
+            Svc.Log.Warning($"[Autofate] Last {CombatTrailMs / 1000}s before death: {_combatTrail.Summary(Environment.TickCount64)}");
+            _combatTrail.Clear();
             Svc.Chat.PrintError("[Autofate] You died — paused until you're up again.");
         }
 
@@ -1911,6 +1919,10 @@ public sealed unsafe class FarmingController
     // from its pack. Anything already on us is also left to come to us: walking at it walks us into
     // whatever is standing next to it. We only walk to a mob that is on us but isn't coming (ranged
     // mobs, stuck ones).
+    // HP and attackers over the last seconds of combat, logged on death (see Tick).
+    private readonly Logic.CombatTrail _combatTrail = new(CombatTrailMs);
+    private const long CombatTrailMs = 15000;
+
     private ulong _kiteTargetId;
     private Vector3 _kiteSpot;
     // Safe hold (see SelectCombatTarget): since when we've been waiting before a new pull, and how long at most.
